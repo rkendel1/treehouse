@@ -19,6 +19,11 @@ pub struct SystemGraphVersion {
     pub relationships: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SystemGraphTimeline {
+    pub versions: Vec<SystemGraphVersion>,
+}
+
 pub fn build_system_graph_version(
     version: u64,
     mut subsystems: Vec<Subsystem>,
@@ -36,6 +41,22 @@ pub fn build_system_graph_version(
         subsystems,
         relationships,
     }
+}
+
+pub fn append_graph_version(
+    timeline: &mut SystemGraphTimeline,
+    version: SystemGraphVersion,
+    keep_last: usize,
+) {
+    timeline.versions.push(version);
+    if keep_last > 0 && timeline.versions.len() > keep_last {
+        let overflow = timeline.versions.len() - keep_last;
+        timeline.versions.drain(0..overflow);
+    }
+}
+
+pub fn latest_graph_version(timeline: &SystemGraphTimeline) -> Option<&SystemGraphVersion> {
+    timeline.versions.last()
 }
 
 #[cfg(test)]
@@ -62,5 +83,27 @@ mod tests {
         );
         assert_eq!(graph.version, 2);
         assert!((graph.architecture_confidence - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn appends_and_trims_timeline() {
+        let mut timeline = SystemGraphTimeline::default();
+        append_graph_version(
+            &mut timeline,
+            build_system_graph_version(1, vec![], vec![]),
+            2,
+        );
+        append_graph_version(
+            &mut timeline,
+            build_system_graph_version(2, vec![], vec![]),
+            2,
+        );
+        append_graph_version(
+            &mut timeline,
+            build_system_graph_version(3, vec![], vec![]),
+            2,
+        );
+        assert_eq!(timeline.versions.len(), 2);
+        assert_eq!(latest_graph_version(&timeline).unwrap().version, 3);
     }
 }

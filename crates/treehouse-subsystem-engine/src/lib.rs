@@ -16,73 +16,71 @@ pub fn discover_subsystems(signals: &SubsystemSignals) -> Vec<Subsystem> {
     let mut grouped: BTreeMap<String, Subsystem> = BTreeMap::new();
 
     for entity in &signals.entities {
-        let id = classify_domain(entity);
-        let entry = grouped.entry(id.clone()).or_insert_with(|| Subsystem {
-            id: id.clone(),
-            owner: default_owner(&id),
-            ..Subsystem::default()
+        add_signal(&mut grouped, classify_domain(entity), |subsystem| {
+            subsystem.entities.push(entity.clone())
         });
-        entry.entities.push(entity.clone());
     }
-
     for api in &signals.apis {
-        let id = classify_domain(api);
-        let entry = grouped.entry(id.clone()).or_insert_with(|| Subsystem {
-            id: id.clone(),
-            owner: default_owner(&id),
-            ..Subsystem::default()
+        add_signal(&mut grouped, classify_domain(api), |subsystem| {
+            subsystem.apis.push(api.clone())
         });
-        entry.apis.push(api.clone());
     }
-
     for workflow in &signals.workflows {
-        let id = classify_domain(workflow);
-        let entry = grouped.entry(id.clone()).or_insert_with(|| Subsystem {
-            id: id.clone(),
-            owner: default_owner(&id),
-            ..Subsystem::default()
+        add_signal(&mut grouped, classify_domain(workflow), |subsystem| {
+            subsystem.workflows.push(workflow.clone())
         });
-        entry.workflows.push(workflow.clone());
     }
-
     for event in &signals.events {
-        let id = classify_domain(event);
-        let entry = grouped.entry(id.clone()).or_insert_with(|| Subsystem {
-            id: id.clone(),
-            owner: default_owner(&id),
-            ..Subsystem::default()
+        add_signal(&mut grouped, classify_domain(event), |subsystem| {
+            subsystem.events.push(event.clone())
         });
-        entry.events.push(event.clone());
     }
 
     for subsystem in grouped.values_mut() {
-        subsystem.entities.sort();
-        subsystem.entities.dedup();
-        subsystem.apis.sort();
-        subsystem.apis.dedup();
-        subsystem.workflows.sort();
-        subsystem.workflows.dedup();
-        subsystem.events.sort();
-        subsystem.events.dedup();
+        dedupe_sort(&mut subsystem.entities);
+        dedupe_sort(&mut subsystem.apis);
+        dedupe_sort(&mut subsystem.workflows);
+        dedupe_sort(&mut subsystem.events);
 
-        let evidence = subsystem.entities.len()
-            + subsystem.apis.len()
-            + subsystem.workflows.len()
-            + subsystem.events.len();
+        let evidence = subsystem.entities.len() as f32 * 2.0
+            + subsystem.apis.len() as f32
+            + subsystem.workflows.len() as f32
+            + subsystem.events.len() as f32;
+
         let symbol_hits = signals
             .code_symbols
             .iter()
             .filter(|symbol| classify_domain(symbol) == subsystem.id)
-            .count();
+            .count() as f32;
+
         let db_hits = signals
             .db_signals
             .iter()
             .filter(|signal| classify_domain(signal) == subsystem.id)
-            .count();
-        subsystem.confidence = ((evidence + symbol_hits + db_hits) as f32 / 20.0).clamp(0.45, 0.99);
+            .count() as f32;
+
+        let weighted = evidence + (symbol_hits * 0.75) + (db_hits * 1.25);
+        subsystem.confidence = (0.35 + (weighted / 20.0)).clamp(0.45, 0.99);
     }
 
     grouped.into_values().collect()
+}
+
+fn add_signal<F>(grouped: &mut BTreeMap<String, Subsystem>, id: String, update: F)
+where
+    F: FnOnce(&mut Subsystem),
+{
+    let entry = grouped.entry(id.clone()).or_insert_with(|| Subsystem {
+        id: id.clone(),
+        owner: default_owner(&id),
+        ..Subsystem::default()
+    });
+    update(entry);
+}
+
+fn dedupe_sort(values: &mut Vec<String>) {
+    values.sort();
+    values.dedup();
 }
 
 fn default_owner(domain: &str) -> Option<String> {
@@ -93,6 +91,7 @@ fn default_owner(domain: &str) -> Option<String> {
         "Orders" => "order-service",
         "Analytics" => "analytics-service",
         "Workflow" => "workflow-service",
+        "Runtime" => "platform-runtime",
         _ => "platform-core",
     };
     Some(owner.to_string())
@@ -100,43 +99,51 @@ fn default_owner(domain: &str) -> Option<String> {
 
 fn classify_domain(value: &str) -> String {
     let lower = value.to_ascii_lowercase();
-    if lower.contains("invoice")
-        || lower.contains("payment")
-        || lower.contains("subscription")
-        || lower.contains("billing")
-        || lower.contains("refund")
-    {
+    if contains_any(
+        &lower,
+        &["invoice", "payment", "subscription", "billing", "refund", "transaction"],
+    ) {
         return "Billing".to_string();
     }
-    if lower.contains("user")
-        || lower.contains("identity")
-        || lower.contains("auth")
-        || lower.contains("tenant")
-        || lower.contains("session")
-    {
+    if contains_any(
+        &lower,
+        &[
+            "user", "identity", "auth", "tenant", "session", "account", "profile",
+        ],
+    ) {
         return "Identity".to_string();
     }
-    if lower.contains("notification")
-        || lower.contains("message")
-        || lower.contains("template")
-        || lower.contains("delivery")
-        || lower.contains("recipient")
-    {
+    if contains_any(
+        &lower,
+        &[
+            "notification",
+            "message",
+            "template",
+            "delivery",
+            "recipient",
+            "email",
+            "sms",
+        ],
+    ) {
         return "Notifications".to_string();
     }
-    if lower.contains("order") || lower.contains("cart") || lower.contains("checkout") {
+    if contains_any(&lower, &["order", "cart", "checkout", "tax", "receipt"]) {
         return "Orders".to_string();
     }
-    if lower.contains("event") || lower.contains("trace") || lower.contains("runtime") {
+    if contains_any(&lower, &["event", "trace", "runtime", "log"]) {
         return "Runtime".to_string();
     }
-    if lower.contains("workflow") || lower.contains("state") || lower.contains("process") {
+    if contains_any(&lower, &["workflow", "state", "process", "orchestration"]) {
         return "Workflow".to_string();
     }
-    if lower.contains("analytics") || lower.contains("metric") || lower.contains("insight") {
+    if contains_any(&lower, &["analytics", "metric", "insight", "reporting"]) {
         return "Analytics".to_string();
     }
     "Core".to_string()
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 #[cfg(test)]
@@ -161,5 +168,9 @@ mod tests {
         assert!(subsystems.iter().any(|s| s.id == "Billing"));
         assert!(subsystems.iter().any(|s| s.id == "Identity"));
         assert!(subsystems.iter().any(|s| s.id == "Notifications"));
+        assert!(subsystems
+            .iter()
+            .filter(|s| s.id == "Billing")
+            .all(|s| s.confidence > 0.6));
     }
 }
