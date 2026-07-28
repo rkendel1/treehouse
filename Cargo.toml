@@ -23,6 +23,7 @@ members = [
   "crates/treehouse-stats",
   "crates/treehouse-tree",
   "crates/treehouse-twin",
+  "crates/treehouse-observer",
 ]
 resolver = "2"
 

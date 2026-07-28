@@ -1,5 +1,5 @@
 [package]
-name = "treehouse-mock"
+name = "treehouse-observer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,21 +7,9 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tiny_http.workspace = true
 treehouse-application-model = { path = "../treehouse-application-model" }
-treehouse-api = { path = "../treehouse-api" }
-treehouse-convex = { path = "../treehouse-convex" }
 treehouse-graph = { path = "../treehouse-graph" }
 treehouse-model-inference = { path = "../treehouse-model-inference" }
-treehouse-observer = { path = "../treehouse-observer" }
 treehouse-parser = { path = "../treehouse-parser" }
-treehouse-postgres = { path = "../treehouse-postgres" }
-
-[[bin]]
-name = "treehouse-mock"
-path = "src/main.rs"
-
-[[bin]]
-name = "treehouse"
-path = "src/bin/treehouse.rs"
