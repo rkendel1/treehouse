@@ -77,8 +77,9 @@ pub fn parse_structured_file(path: &Path) -> Result<ParsedDocument> {
         .with_context(|| format!("failed to stat file: {}", path.display()))?
         .len() as usize;
 
-    // SAFETY: The mapping is read-only, the file handle stays alive for this scope,
-    // and this assumes the file is not truncated or deleted during the mapping lifetime.
+    // SAFETY: The mapping is read-only and valid for this scope while we parse from it.
+    // The mmap keeps the underlying OS mapping alive independently of the `File` object,
+    // and this assumes the file is not truncated or deleted during mapping usage.
     let mmap = unsafe { Mmap::map(&file) }
         .with_context(|| format!("failed to memory-map file: {}", path.display()))?;
 

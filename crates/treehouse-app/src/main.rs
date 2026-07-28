@@ -11,6 +11,7 @@ use treehouse_stats::{analyze, DocumentStats};
 use treehouse_tree::{build_rows, TreeRow, TreeState};
 
 const MAX_RECENT_FILES: usize = 12;
+const TREE_ROW_HEIGHT: f32 = 22.0;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -154,8 +155,7 @@ impl TreehouseApp {
     }
 
     fn draw_tree(&mut self, ui: &mut egui::Ui, rows: &[TreeRow]) {
-        let row_height = 22.0;
-        egui::ScrollArea::vertical().show_rows(ui, row_height, rows.len(), |ui, row_range| {
+        egui::ScrollArea::vertical().show_rows(ui, TREE_ROW_HEIGHT, rows.len(), |ui, row_range| {
             for row_index in row_range {
                 let row = &rows[row_index];
                 ui.horizontal(|ui| {
@@ -272,11 +272,11 @@ impl eframe::App for TreehouseApp {
                 }
 
                 let mut remove_bookmark: Option<usize> = None;
-                let bookmarks = self.bookmarks.clone();
-                for (idx, path) in bookmarks.iter().enumerate() {
+                let mut open_bookmark: Option<String> = None;
+                for (idx, path) in self.bookmarks.iter().enumerate() {
                     ui.horizontal(|ui| {
                         if ui.button("Go").clicked() {
-                            self.tree_state.select_path(path.clone());
+                            open_bookmark = Some(path.clone());
                         }
                         if ui.small_button("✕").clicked() {
                             remove_bookmark = Some(idx);
@@ -288,17 +288,23 @@ impl eframe::App for TreehouseApp {
                     self.bookmarks.remove(idx);
                     self.save_state();
                 }
+                if let Some(path) = open_bookmark {
+                    self.tree_state.select_path(path);
+                }
 
                 ui.separator();
                 ui.heading("Recent Files");
                 if self.recent_files.is_empty() {
                     ui.label("No recent files");
                 }
-                let recent = self.recent_files.clone();
-                for path in recent {
+                let mut open_recent: Option<PathBuf> = None;
+                for path in &self.recent_files {
                     if ui.button(path.display().to_string()).clicked() {
-                        self.open_file_path(path);
+                        open_recent = Some(path.clone());
                     }
+                }
+                if let Some(path) = open_recent {
+                    self.open_file_path(path);
                 }
             });
 
