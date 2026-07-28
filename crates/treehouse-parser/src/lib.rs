@@ -58,7 +58,8 @@ pub fn parse_str_with_format(input: &str, format: DocumentFormat) -> Result<Docu
         DocumentFormat::Yaml => serde_yaml::from_str(input).context("failed to parse YAML")?,
         DocumentFormat::Toml => {
             let toml_value: toml::Value = toml::from_str(input).context("failed to parse TOML")?;
-            serde_json::to_value(toml_value).context("failed to convert TOML document")?
+            serde_json::to_value(toml_value)
+                .context("failed to convert TOML to JSON representation")?
         }
     };
 
@@ -76,7 +77,8 @@ pub fn parse_structured_file(path: &Path) -> Result<ParsedDocument> {
         .with_context(|| format!("failed to stat file: {}", path.display()))?
         .len() as usize;
 
-    // SAFETY: The mapping is read-only and the file handle stays alive for this scope.
+    // SAFETY: The mapping is read-only, the file handle stays alive for this scope,
+    // and this assumes the file is not truncated or deleted during the mapping lifetime.
     let mmap = unsafe { Mmap::map(&file) }
         .with_context(|| format!("failed to memory-map file: {}", path.display()))?;
 

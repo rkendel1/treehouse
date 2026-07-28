@@ -78,7 +78,9 @@ pub fn query_json_path(document: &Document, query: &str) -> Result<Vec<QueryMatc
     if let Some(stripped) = trimmed.strip_prefix("$..") {
         let key = stripped.trim();
         if key.is_empty() {
-            return Err(anyhow!("invalid JSONPath: missing recursive key"));
+            return Err(anyhow!(
+                "invalid JSONPath: recursive descent operator `$..` requires a key (e.g., `$..price`)"
+            ));
         }
 
         let mut out = Vec::new();
@@ -122,7 +124,7 @@ fn query_array_wildcard(document: &Document, query: &str) -> Result<Vec<QueryMat
                 path: format!("{}[{}]", prefix, index),
                 value: item.clone(),
             });
-        } else if let Some(value) = value_at_path_in_value(item, suffix) {
+        } else if let Some(value) = resolve_suffix_path(item, suffix) {
             out.push(QueryMatch {
                 path: indexed_path,
                 value: value.clone(),
@@ -133,7 +135,7 @@ fn query_array_wildcard(document: &Document, query: &str) -> Result<Vec<QueryMat
     Ok(out)
 }
 
-fn value_at_path_in_value<'a>(root: &'a Value, suffix: &str) -> Option<&'a Value> {
+fn resolve_suffix_path<'a>(root: &'a Value, suffix: &str) -> Option<&'a Value> {
     if suffix.is_empty() {
         return Some(root);
     }

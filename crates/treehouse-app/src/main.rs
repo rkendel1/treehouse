@@ -10,6 +10,8 @@ use treehouse_search::{search_document, SearchMatch};
 use treehouse_stats::{analyze, DocumentStats};
 use treehouse_tree::{build_rows, TreeRow, TreeState};
 
+const MAX_RECENT_FILES: usize = 12;
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
     eframe::run_native(
@@ -94,7 +96,7 @@ impl TreehouseApp {
     fn push_recent(&mut self, path: PathBuf) {
         self.recent_files.retain(|p| p != &path);
         self.recent_files.insert(0, path);
-        self.recent_files.truncate(12);
+        self.recent_files.truncate(MAX_RECENT_FILES);
     }
 
     fn refresh_search(&mut self) {
@@ -494,13 +496,23 @@ fn save_persisted_state(state: &PersistedState) {
         return;
     };
 
-    if fs::create_dir_all(parent).is_err() {
+    if let Err(err) = fs::create_dir_all(parent) {
+        eprintln!(
+            "warning: failed to create state directory {}: {err}",
+            parent.display()
+        );
         return;
     }
 
     let Ok(serialized) = serde_json::to_string_pretty(state) else {
+        eprintln!("warning: failed to serialize persisted Treehouse state");
         return;
     };
 
-    let _ = fs::write(path, serialized);
+    if let Err(err) = fs::write(&path, serialized) {
+        eprintln!(
+            "warning: failed to write persisted Treehouse state {}: {err}",
+            path.display()
+        );
+    }
 }

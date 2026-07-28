@@ -59,7 +59,9 @@ impl TreeState {
 
     pub fn expand_path_chain(&mut self, path: &str) {
         for ancestor in path_ancestors(path) {
-            self.expanded.insert(ancestor);
+            if !self.expanded.insert(ancestor) {
+                continue;
+            }
         }
     }
 }
