@@ -468,6 +468,22 @@ Structural comparison engine.
 - API surface generation from discovered entity schemas
 - Model-first request builder
 
+### treehouse-api-engine
+
+- OpenAPI import into an executable API graph
+- Generated scenario primitives (happy path, validation, boundary)
+- Transaction flow and API state machine discovery primitives
+
+### treehouse-execution
+
+- Transaction runner primitives (`runner`, `environment`, `assertions`, `fixtures`)
+- Local executable flow reports for inferred API workflows
+
+### treehouse-contracts
+
+- Contract validation helpers for required fields
+- Compatibility/drift checks for schema changes
+
 ### treehouse-mock
 
 - Mock API runtime generated from structured model files
@@ -549,6 +565,14 @@ Features:
 - Model-first request builder (required/optional fields + generated JSON body template)
 - New `treehouse-mock` runtime and `treehouse` CLI `mock` command
 - Local mock server at `localhost:4000` generated from discovered schemas
+
+## Milestone 4.5 — Executable API Intelligence
+
+- New `treehouse-api-engine` crate for OpenAPI ingestion and executable API graph generation
+- Scenario generation primitives for happy-path, validation, and boundary API tests
+- Transaction and state-machine discovery primitives for API workflows and lifecycle inference
+- New `treehouse-execution` crate for local transaction execution reporting
+- New `treehouse-contracts` crate for contract validation and schema drift detection
 
 ## Milestone 3.5 — Application Model Compiler
 
