@@ -141,7 +141,7 @@ Starts a local mock API server at `localhost:4000` from inferred entity/API shap
 ### Development Intelligence / Architecture Watching
 
 ```bash
-treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
+treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous] [--hot-reload]
 ```
 
 Runs repository observation and emits System Diff output each iteration.
@@ -153,6 +153,7 @@ Defaults:
 - iterations: `1`
 
 Use `--continuous` to keep running until you stop it (Ctrl+C).
+Use `--hot-reload` to auto-regenerate twin and projection artifacts when drift or relevant changes are detected.
 
 Example:
 
@@ -164,7 +165,7 @@ treehouse connect . --interval 2 --continuous
 ### Real-Time Watch Agent
 
 ```bash
-treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
+treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous] [--hot-reload]
 ```
 
 Runs the same snapshot/diff loop as `connect`, plus architecture-change events containing drift findings and remediation recommendations.
@@ -269,6 +270,8 @@ treehouse twin build <repo-path> [--output file]
 treehouse twin inspect <bundle-file>
 treehouse twin compare <bundle-a> <bundle-b>
 treehouse twin run <bundle-file> --capability <name>
+treehouse twin simulate <bundle-file> --workflow <name> [--events event_a,event_b]
+treehouse twin what-if <bundle-file> --workflow <name> [--events event_a,event_b] [--remove-state state|--remove-transition from:to]
 ```
 
 See `docs/software-knowledge-graph-v2.md` for the V2 model and roadmap.
@@ -355,6 +358,7 @@ Implemented UX includes:
 - Search, JSONPath, stats, and live System Diff result panes
 - Live System Diff target selection: add repository paths, auto-discover Desktop repos, and connect to a selected target feed
 - In-app cold start for selected monitor target: one-click generation of initial `.treehouse` artifacts (optional baseline scan)
+- In-app Twin Runtime Controls: build twin bundle, generate projections, start/stop API gateway, start/stop CAR hot reload mode, run inferred capability execution, and one-click end-to-end twin software execution for the selected monitor target
 - Diff mode (open base file and compare)
 - Bookmarks and recent files
 - Command palette actions with categories and descriptions

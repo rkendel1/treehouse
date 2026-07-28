@@ -3,7 +3,7 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::UNIX_EPOCH,
 };
 
@@ -128,6 +128,10 @@ struct TreehouseApp {
     selected_monitor_target: Option<usize>,
     cold_start_include_baseline_scan: bool,
     cold_start_status: Option<String>,
+    twin_capability_input: String,
+    twin_runtime_status: Option<String>,
+    gateway_process_id: Option<u32>,
+    hot_reload_car_process_id: Option<u32>,
     live_system_diff_mtime_unix: Option<u64>,
     scan_repo_path: String,
     scan_target_path: String,
@@ -575,6 +579,374 @@ impl TreehouseApp {
             treehouse_dir.display()
         ));
         self.error = None;
+    }
+
+    fn selected_monitor_repo(&self) -> Result<PathBuf, String> {
+        let index = self
+            .selected_monitor_target
+            .ok_or_else(|| "Select a monitor target first.".to_string())?;
+        let repo = self
+            .monitor_targets
+            .get(index)
+            .cloned()
+            .ok_or_else(|| "Selected monitor target is invalid.".to_string())?;
+        if !repo.join(".git").is_dir() {
+            return Err(format!("Not a git repository: {}", repo.display()));
+        }
+        Ok(repo)
+    }
+
+    fn treehouse_workspace_root() -> PathBuf {
+        env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    fn append_output_log(log_path: &Path, title: &str, output: &std::process::Output) {
+        if let Some(parent) = log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(mut log_file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(log_file, "== {} ==", title);
+            let _ = log_file.write_all(&output.stdout);
+            let _ = log_file.write_all(&output.stderr);
+            let _ = writeln!(log_file);
+        }
+    }
+
+    fn run_treehouse_cli_for_repo(
+        &mut self,
+        repo: &Path,
+        args: &[String],
+        log_suffix: &str,
+    ) -> Result<(), String> {
+        let repo_name = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("repo");
+        let log_path = repo
+            .join(".treehouse/runtime")
+            .join(format!("{repo_name}-{log_suffix}.log"));
+        let workspace_root = Self::treehouse_workspace_root();
+        let output = Command::new("cargo")
+            .current_dir(workspace_root)
+            .args(["run", "-q", "-p", "treehouse-mock", "--bin", "treehouse", "--"])
+            .args(args)
+            .output()
+            .map_err(|err| format!("Failed running treehouse CLI: {err}"))?;
+
+        Self::append_output_log(&log_path, &args.join(" "), &output);
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!(
+                "Command failed for {}: {}",
+                repo.display(),
+                stderr.trim()
+            ))
+        }
+    }
+
+    fn build_twin_for_selected_target(&mut self) {
+        let repo = match self.selected_monitor_repo() {
+            Ok(repo) => repo,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+
+        let args = vec!["twin".to_string(), "build".to_string(), repo.display().to_string()];
+        match self.run_treehouse_cli_for_repo(&repo, &args, "twin-build") {
+            Ok(()) => {
+                self.twin_runtime_status = Some(format!(
+                    "Twin bundle built: {}",
+                    repo.join(".treehouse/twin/digital-twin.twin.json").display()
+                ));
+                self.error = None;
+            }
+            Err(err) => self.error = Some(err),
+        }
+    }
+
+    fn run_selected_capability(&mut self) {
+        let repo = match self.selected_monitor_repo() {
+            Ok(repo) => repo,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+        let capability = self.twin_capability_input.trim().to_string();
+        if capability.is_empty() {
+            self.error = Some("Enter a capability name to execute.".to_string());
+            return;
+        }
+        let bundle_path = repo.join(".treehouse/twin/digital-twin.twin.json");
+        if !bundle_path.is_file() {
+            self.error = Some(format!(
+                "Twin bundle missing: {}. Build twin first.",
+                bundle_path.display()
+            ));
+            return;
+        }
+        let args = vec![
+            "twin".to_string(),
+            "run".to_string(),
+            bundle_path.display().to_string(),
+            "--capability".to_string(),
+            capability.clone(),
+        ];
+        match self.run_treehouse_cli_for_repo(&repo, &args, "twin-run") {
+            Ok(()) => {
+                self.twin_runtime_status = Some(format!("Executed capability: {capability}"));
+                self.error = None;
+            }
+            Err(err) => self.error = Some(err),
+        }
+    }
+
+    fn generate_projection_for_selected_target(&mut self) {
+        let repo = match self.selected_monitor_repo() {
+            Ok(repo) => repo,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+        let args = vec![
+            "project".to_string(),
+            repo
+                .join(".treehouse/scan/bootstrap/baseline/application-model.json")
+                .display()
+                .to_string(),
+            "--target".to_string(),
+            "all".to_string(),
+        ];
+        match self.run_treehouse_cli_for_repo(&repo, &args, "projection-all") {
+            Ok(()) => {
+                self.twin_runtime_status = Some(format!(
+                    "Generated projections in {}",
+                    repo.join(".treehouse/projection").display()
+                ));
+                self.error = None;
+            }
+            Err(err) => self.error = Some(err),
+        }
+    }
+
+    fn start_gateway_for_selected_target(&mut self) {
+        if self.gateway_process_id.is_some() {
+            self.error = Some("Gateway is already running. Stop it first.".to_string());
+            return;
+        }
+
+        let repo = match self.selected_monitor_repo() {
+            Ok(repo) => repo,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+        let model_path = repo.join(".treehouse/scan/bootstrap/baseline/application-model.json");
+        if !model_path.is_file() {
+            self.error = Some(format!(
+                "Model missing: {}. Run cold start with baseline scan.",
+                model_path.display()
+            ));
+            return;
+        }
+
+        let repo_name = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("repo");
+        let log_path = repo
+            .join(".treehouse/runtime")
+            .join(format!("{repo_name}-gateway.log"));
+        if let Some(parent) = log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let log_file = match fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            Ok(file) => file,
+            Err(err) => {
+                self.error = Some(format!("Failed to open gateway log: {err}"));
+                return;
+            }
+        };
+        let log_file_err = match log_file.try_clone() {
+            Ok(file) => file,
+            Err(err) => {
+                self.error = Some(format!("Failed to clone gateway log handle: {err}"));
+                return;
+            }
+        };
+
+        let workspace_root = Self::treehouse_workspace_root();
+        let child = Command::new("cargo")
+            .current_dir(workspace_root)
+            .args(["run", "-q", "-p", "treehouse-mock", "--bin", "treehouse", "--"])
+            .arg("project")
+            .arg(model_path)
+            .args(["--target", "gateway"])
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_file_err))
+            .spawn();
+
+        match child {
+            Ok(child) => {
+                let pid = child.id();
+                self.gateway_process_id = Some(pid);
+                self.twin_runtime_status = Some(format!(
+                    "Gateway started for {} (pid {}). Log: {}",
+                    repo.display(),
+                    pid,
+                    log_path.display()
+                ));
+                self.error = None;
+            }
+            Err(err) => {
+                self.error = Some(format!("Failed to start gateway: {err}"));
+            }
+        }
+    }
+
+    fn stop_gateway(&mut self) {
+        let Some(pid) = self.gateway_process_id else {
+            self.error = Some("No gateway process is tracked as running.".to_string());
+            return;
+        };
+
+        match Command::new("kill").arg(pid.to_string()).status() {
+            Ok(status) if status.success() => {
+                self.twin_runtime_status = Some(format!("Stopped gateway process {pid}."));
+                self.gateway_process_id = None;
+                self.error = None;
+            }
+            Ok(_) => {
+                self.error = Some(format!("Failed to stop gateway process {pid}."));
+            }
+            Err(err) => {
+                self.error = Some(format!("Failed to invoke kill for {pid}: {err}"));
+            }
+        }
+    }
+
+    fn start_hot_reload_car_for_selected_target(&mut self) {
+        if self.hot_reload_car_process_id.is_some() {
+            self.error = Some("Hot reload CAR mode is already running. Stop it first.".to_string());
+            return;
+        }
+
+        let repo = match self.selected_monitor_repo() {
+            Ok(repo) => repo,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+
+        let repo_name = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("repo");
+        let log_path = repo
+            .join(".treehouse/runtime")
+            .join(format!("{repo_name}-car-hot-reload.log"));
+        if let Some(parent) = log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let log_file = match fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            Ok(file) => file,
+            Err(err) => {
+                self.error = Some(format!("Failed to open CAR hot reload log: {err}"));
+                return;
+            }
+        };
+        let log_file_err = match log_file.try_clone() {
+            Ok(file) => file,
+            Err(err) => {
+                self.error = Some(format!("Failed to clone CAR hot reload log handle: {err}"));
+                return;
+            }
+        };
+
+        let workspace_root = Self::treehouse_workspace_root();
+        let child = Command::new("bash")
+            .current_dir(workspace_root)
+            .arg("scripts/run-car.sh")
+            .arg(repo.display().to_string())
+            .arg("2")
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_file_err))
+            .spawn();
+
+        match child {
+            Ok(child) => {
+                let pid = child.id();
+                self.hot_reload_car_process_id = Some(pid);
+                self.twin_runtime_status = Some(format!(
+                    "CAR hot reload started for {} (pid {}). Log: {}",
+                    repo.display(),
+                    pid,
+                    log_path.display()
+                ));
+                self.error = None;
+            }
+            Err(err) => {
+                self.error = Some(format!("Failed to start CAR hot reload: {err}"));
+            }
+        }
+    }
+
+    fn stop_hot_reload_car(&mut self) {
+        let Some(pid) = self.hot_reload_car_process_id else {
+            self.error = Some("No CAR hot reload process is tracked as running.".to_string());
+            return;
+        };
+
+        match Command::new("kill").arg(pid.to_string()).status() {
+            Ok(status) if status.success() => {
+                self.twin_runtime_status = Some(format!("Stopped CAR hot reload process {pid}."));
+                self.hot_reload_car_process_id = None;
+                self.error = None;
+            }
+            Ok(_) => {
+                self.error = Some(format!("Failed to stop CAR hot reload process {pid}."));
+            }
+            Err(err) => {
+                self.error = Some(format!("Failed to invoke kill for {pid}: {err}"));
+            }
+        }
+    }
+
+    fn run_digital_twin_execution_for_selected_target(&mut self) {
+        self.cold_start_include_baseline_scan = true;
+        self.run_cold_start_for_selected_target();
+        if self.error.is_some() {
+            return;
+        }
+        self.build_twin_for_selected_target();
+        if self.error.is_some() {
+            return;
+        }
+        self.generate_projection_for_selected_target();
+        if self.error.is_some() {
+            return;
+        }
+        self.start_gateway_for_selected_target();
     }
 
     fn load_workspace_layout_for_path(&mut self, path: &Path) {
@@ -1060,6 +1432,56 @@ impl TreehouseApp {
                 ui.label(status);
             }
         });
+
+        ui.separator();
+        ui.label("Twin Runtime Controls");
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Build Twin Bundle").clicked() {
+                self.build_twin_for_selected_target();
+            }
+            if ui.button("Generate Projections").clicked() {
+                self.generate_projection_for_selected_target();
+            }
+            if ui.button("Start Gateway").clicked() {
+                self.start_gateway_for_selected_target();
+            }
+            if ui.button("Stop Gateway").clicked() {
+                self.stop_gateway();
+            }
+            if ui.button("Start CAR Hot Reload").clicked() {
+                self.start_hot_reload_car_for_selected_target();
+            }
+            if ui.button("Stop CAR Hot Reload").clicked() {
+                self.stop_hot_reload_car();
+            }
+            if ui
+                .button("Run Twin Software (Cold Start -> Build -> Project -> Gateway)")
+                .clicked()
+            {
+                self.run_digital_twin_execution_for_selected_target();
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Capability:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.twin_capability_input)
+                    .hint_text("auth | billing | provider"),
+            );
+            if ui.button("Run Capability").clicked() {
+                self.run_selected_capability();
+            }
+            if let Some(pid) = self.gateway_process_id {
+                ui.label(format!("Gateway pid: {pid}"));
+            }
+            if let Some(pid) = self.hot_reload_car_process_id {
+                ui.label(format!("CAR hot reload pid: {pid}"));
+            }
+        });
+
+        if let Some(status) = &self.twin_runtime_status {
+            ui.label(status);
+        }
 
         let mut remove_target: Option<usize> = None;
         egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {

@@ -32,7 +32,9 @@ use treehouse_system_graph::{
     SystemGraphTimeline,
 };
 use treehouse_twin::{
-    build_twin_bundle, capability_similarity, execute_capability, RuntimeProjection, TwinBundle,
+    build_twin_bundle, capability_similarity, deterministic_events_for_workflow,
+    execute_capability, run_pre_change_what_if, simulate_workflow, ProposedChange,
+    RuntimeProjection, TwinBundle,
 };
 
 fn main() -> Result<()> {
@@ -215,7 +217,7 @@ fn main() -> Result<()> {
         "connect" => {
             let Some(repo_path) = args.next() else {
                 bail!(
-                    "usage: treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]"
+                    "usage: treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous] [--hot-reload]"
                 );
             };
             let mut state_path = None;
@@ -223,6 +225,7 @@ fn main() -> Result<()> {
             let mut interval_secs = 2_u64;
             let mut iterations = 1_u64;
             let mut continuous = false;
+            let mut hot_reload = false;
 
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -245,6 +248,7 @@ fn main() -> Result<()> {
                             .with_context(|| format!("invalid --iterations value: {raw}"))?;
                     }
                     "--continuous" => continuous = true,
+                    "--hot-reload" => hot_reload = true,
                     _ => bail!("unknown connect argument `{arg}`"),
                 }
             }
@@ -258,12 +262,13 @@ fn main() -> Result<()> {
                 report_path.as_deref(),
                 interval_secs,
                 if continuous { None } else { Some(iterations) },
+                hot_reload,
             )
         }
         "watch" => {
             let Some(repo_path) = args.next() else {
                 bail!(
-                    "usage: treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]"
+                    "usage: treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous] [--hot-reload]"
                 );
             };
             let mut state_path = None;
@@ -271,6 +276,7 @@ fn main() -> Result<()> {
             let mut interval_secs = 2_u64;
             let mut iterations = 1_u64;
             let mut continuous = false;
+            let mut hot_reload = false;
 
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -293,6 +299,7 @@ fn main() -> Result<()> {
                             .with_context(|| format!("invalid --iterations value: {raw}"))?;
                     }
                     "--continuous" => continuous = true,
+                    "--hot-reload" => hot_reload = true,
                     _ => bail!("unknown watch argument `{arg}`"),
                 }
             }
@@ -306,6 +313,7 @@ fn main() -> Result<()> {
                 report_path.as_deref(),
                 interval_secs,
                 if continuous { None } else { Some(iterations) },
+                hot_reload,
             )
         }
         "scan" => {
@@ -592,7 +600,7 @@ fn main() -> Result<()> {
         "twin" => {
             let Some(action) = args.next() else {
                 bail!(
-                    "usage: treehouse twin <build|inspect|compare|run> ..."
+                    "usage: treehouse twin <build|inspect|compare|run|simulate|what-if> ..."
                 );
             };
             match action.as_str() {
@@ -640,8 +648,13 @@ fn main() -> Result<()> {
                             "behavior": {
                                 "workflows": bundle.behavior.workflows.len(),
                                 "transitions": bundle.behavior.transitions,
+                                "executable_workflows": bundle.behavior.executable_workflows.len(),
+                                "dataflows": bundle.behavior.dataflows.len(),
                             },
-                            "capabilities": bundle.capability.capabilities.len(),
+                            "capabilities": {
+                                "count": bundle.capability.capabilities.len(),
+                                "taxonomy_domains": bundle.capability.taxonomy,
+                            },
                             "runtime": {
                                 "architecture_confidence": bundle.runtime.architecture_confidence,
                                 "alarms": bundle.runtime.alarms,
@@ -704,6 +717,115 @@ fn main() -> Result<()> {
                     );
                     Ok(())
                 }
+                "simulate" => {
+                    let Some(bundle_path) = args.next() else {
+                        bail!(
+                            "usage: treehouse twin simulate <bundle-file> --workflow <name> [--events event_a,event_b]"
+                        );
+                    };
+                    let mut workflow = None;
+                    let mut events = None;
+                    while let Some(arg) = args.next() {
+                        match arg.as_str() {
+                            "--workflow" => workflow = args.next(),
+                            "--events" => events = args.next(),
+                            _ => bail!("unknown twin simulate argument `{arg}`"),
+                        }
+                    }
+                    let workflow = workflow.ok_or_else(|| {
+                        anyhow!(
+                            "missing --workflow <name> argument for treehouse twin simulate"
+                        )
+                    })?;
+                    let bundle = load_twin_bundle(Path::new(&bundle_path))?;
+                    let events: Vec<String> = if let Some(raw_events) = events {
+                        raw_events
+                            .split(',')
+                            .map(|part| part.trim())
+                            .filter(|part| !part.is_empty())
+                            .map(|part| part.to_string())
+                            .collect()
+                    } else {
+                        deterministic_events_for_workflow(&bundle, &workflow)
+                    };
+                    let simulation = simulate_workflow(&bundle, &workflow, &events);
+                    println!("{}", serde_json::to_string_pretty(&simulation)?);
+                    Ok(())
+                }
+                "what-if" => {
+                    let Some(bundle_path) = args.next() else {
+                        bail!(
+                            "usage: treehouse twin what-if <bundle-file> --workflow <name> [--events event_a,event_b] [--remove-state state|--remove-transition from:to]"
+                        );
+                    };
+                    let mut workflow = None;
+                    let mut events = None;
+                    let mut remove_state = None;
+                    let mut remove_transition = None;
+
+                    while let Some(arg) = args.next() {
+                        match arg.as_str() {
+                            "--workflow" => workflow = args.next(),
+                            "--events" => events = args.next(),
+                            "--remove-state" => remove_state = args.next(),
+                            "--remove-transition" => remove_transition = args.next(),
+                            _ => bail!("unknown twin what-if argument `{arg}`"),
+                        }
+                    }
+
+                    let workflow = workflow.ok_or_else(|| {
+                        anyhow!(
+                            "missing --workflow <name> argument for treehouse twin what-if"
+                        )
+                    })?;
+                    let proposed_change = if let Some(state) = remove_state {
+                        ProposedChange::RemoveState {
+                            workflow: workflow.clone(),
+                            state,
+                        }
+                    } else if let Some(transition) = remove_transition {
+                        let mut parts = transition.split(':');
+                        let from = parts
+                            .next()
+                            .ok_or_else(|| anyhow!("invalid --remove-transition value"))?
+                            .to_string();
+                        let to = parts
+                            .next()
+                            .ok_or_else(|| anyhow!("invalid --remove-transition value"))?
+                            .to_string();
+                        ProposedChange::RemoveTransition {
+                            workflow: workflow.clone(),
+                            from,
+                            to,
+                        }
+                    } else {
+                        bail!(
+                            "missing change argument. use --remove-state <state> or --remove-transition <from:to>"
+                        );
+                    };
+
+                    let events: Vec<String> = events
+                        .unwrap_or_default()
+                        .split(',')
+                        .map(|part| part.trim())
+                        .filter(|part| !part.is_empty())
+                        .map(|part| part.to_string())
+                        .collect();
+                    let bundle = load_twin_bundle(Path::new(&bundle_path))?;
+                    let event_input = if events.is_empty() {
+                        deterministic_events_for_workflow(&bundle, &workflow)
+                    } else {
+                        events
+                    };
+                    let report = run_pre_change_what_if(
+                        &bundle,
+                        &workflow,
+                        &event_input,
+                        proposed_change,
+                    );
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                    Ok(())
+                }
                 _ => bail!("unknown twin command `{action}`"),
             }
         }
@@ -717,8 +839,8 @@ fn usage() -> &'static str {
   treehouse analyze <structured files...>
   treehouse compile --target <postgres|convex> [--output dir] <structured files...>
     treehouse project <application-model.json> --target <postgres|convex|gateway|all> [--output dir]
-    treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
-    treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
+    treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous] [--hot-reload]
+    treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous] [--hot-reload]
   treehouse scan <repo-path> --target <path|name> [--local-llm [heuristic|ollama:<model>]] [--output dir] [--baseline-only] [--goals-only] [--format json|markdown]
   treehouse evidence query --repo <path> [--kind kind] [--subsystem id] [--since unix|YYYY-MM-DD]
     treehouse evidence snapshot --repo <path> --output <file>
@@ -729,7 +851,9 @@ fn usage() -> &'static str {
     treehouse twin build <repo-path> [--output file]
     treehouse twin inspect <bundle-file>
     treehouse twin compare <bundle-a> <bundle-b>
-    treehouse twin run <bundle-file> --capability <name>"
+    treehouse twin run <bundle-file> --capability <name>
+    treehouse twin simulate <bundle-file> --workflow <name> [--events event_a,event_b]
+    treehouse twin what-if <bundle-file> --workflow <name> [--events event_a,event_b] [--remove-state state|--remove-transition from:to]"
 }
 
 fn parse_since(raw: &str) -> Result<u64> {
@@ -868,6 +992,48 @@ fn load_twin_bundle(path: &Path) -> Result<TwinBundle> {
         .with_context(|| format!("failed parsing twin bundle {}", path.display()))
 }
 
+fn run_hot_reload_artifact_refresh(repo_path: &Path) -> Result<()> {
+    let model_path = repo_path.join(".treehouse/scan/bootstrap/baseline/application-model.json");
+    if !model_path.exists() {
+        return Ok(());
+    }
+
+    let bundle = compile_twin_bundle(repo_path)?;
+    let bundle_path = repo_path.join(".treehouse/twin/digital-twin.twin.json");
+    save_twin_bundle(&bundle_path, &bundle)?;
+
+    let model = load_application_model(&model_path)?;
+    let projection_root = repo_path.join(".treehouse/projection");
+    let postgres_dir = projection_root.join("postgres");
+    let convex_dir = projection_root.join("convex");
+
+    let postgres_artifacts = compile_postgres(&model);
+    write_artifacts(
+        &postgres_dir,
+        postgres_artifacts
+            .files
+            .into_iter()
+            .map(|file| (file.relative_path, file.content)),
+    )?;
+    write_model(&postgres_dir, &model)?;
+
+    let convex_artifacts = compile_convex(&model);
+    write_artifacts(
+        &convex_dir,
+        convex_artifacts
+            .files
+            .into_iter()
+            .map(|file| (file.relative_path, file.content)),
+    )?;
+    write_model(&convex_dir, &model)?;
+
+    println!(
+        "Hot reload updated twin + projections for {}",
+        repo_path.display()
+    );
+    Ok(())
+}
+
 fn print_analysis(model: &ApplicationModel) {
     println!("Detected Application:");
     println!("{}", model.application.name);
@@ -924,6 +1090,7 @@ fn run_connect(
     report_path: Option<&Path>,
     interval_secs: u64,
     iterations: Option<u64>,
+    hot_reload: bool,
 ) -> Result<()> {
     println!(
         "treehouse connect is supported; for real-time architecture mode use `treehouse watch`."
@@ -934,6 +1101,7 @@ fn run_connect(
         report_path,
         interval_secs,
         iterations,
+        hot_reload,
     )
 }
 
@@ -943,6 +1111,7 @@ fn run_watch(
     report_path: Option<&Path>,
     interval_secs: u64,
     iterations: Option<u64>,
+    hot_reload: bool,
 ) -> Result<()> {
     let state_path = state_path
         .map(PathBuf::from)
@@ -1052,6 +1221,18 @@ fn run_watch(
         save_runtime_timeline(&runtime_timeline_path, &runtime_timeline)?;
         let runtime_docs = render_runtime_documentation(&runtime);
         save_runtime_documentation(&runtime_docs_path, &runtime_docs)?;
+
+        if hot_reload {
+            let relevant_drift = !report.changed_files.is_empty()
+                || !report.architecture_drift.is_empty()
+                || !report.new_capabilities.is_empty()
+                || !report.relationships_added.is_empty()
+                || !report.api_added.is_empty()
+                || !report.workflows_added.is_empty();
+            if relevant_drift {
+                run_hot_reload_artifact_refresh(repo_path)?;
+            }
+        }
 
         save_report(&report_path, &report)?;
         save_state(
@@ -1259,7 +1440,7 @@ mod tests {
 
         let state = temp_dir.join(".treehouse/state.json");
         let report = temp_dir.join(".treehouse/report.json");
-        run_connect(&temp_dir, Some(&state), Some(&report), 1, 1).unwrap();
+        run_connect(&temp_dir, Some(&state), Some(&report), 1, Some(1), false).unwrap();
 
         assert!(state.exists());
         assert!(report.exists());

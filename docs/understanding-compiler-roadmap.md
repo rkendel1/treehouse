@@ -16,13 +16,16 @@ Git Repository
 - treehouse twin inspect <bundle-file>
 - treehouse twin compare <bundle-a> <bundle-b>
 - treehouse twin run <bundle-file> --capability <name>
+- treehouse twin simulate <bundle-file> --workflow <name> [--events event_a,event_b]
+- treehouse twin what-if <bundle-file> --workflow <name> [--events event_a,event_b] [--remove-state state|--remove-transition from:to]
 
 ## What twin.v1 includes
 
 - Architecture model (node/edge/API/symbol counts)
-- Behavior model (workflow structures)
-- Capability model (capability ownership, dependencies, exposed APIs)
+- Behavior model with Stage 2 inference (workflow structures + inferred transitions from call/event/dataflow signals)
+- Capability model with Stage 3 intent taxonomy and confidence scoring
 - Runtime model (confidence, alarms, subsystem health)
+- Deterministic Stage 4 execution semantics for workflow simulation and pre-change impact runs
 
 ## What this enables now
 
@@ -30,15 +33,17 @@ Git Repository
 - Cross-repository comparison by capability overlap
 - Capability-level execution traces against inferred twin model
 
-## Next roadmap slices
+## Stage Status
 
-1. Stage 2 Behavioral Twin:
-   - infer workflow sequences directly from call/event/dataflow signals
-   - persist executable behavior graph
-2. Stage 3 Intent Twin:
-   - infer business capabilities from entities, APIs, workflows, docs
-3. Stage 4 Execution Twin:
-   - capability execution engine with deterministic simulation semantics
+1. Stage 2 Behavioral Twin (implemented):
+   - workflow transition inference from model + runtime event + relationship/dataflow signals
+   - persisted executable workflow graph in the twin bundle
+2. Stage 3 Intent Twin (implemented):
+   - capability taxonomy domains inferred from capability/API/dependency/workflow evidence
+   - confidence score + evidence trace per capability intent profile
+3. Stage 4 Execution Twin (implemented):
+   - deterministic workflow simulator (`twin simulate`)
+   - pre-change what-if impact analysis (`twin what-if`)
 4. Stage 5 Runtime Twin:
    - telemetry overlays (latency, failures, retries, routing distributions)
 5. Stage 6 Reasoning Twin:

@@ -20,4 +20,4 @@ echo "Initializing cold start artifacts..."
 scripts/cold-start-repos.sh --baseline-scan "$repo"
 
 echo "Starting continuous watch + CAR projections..."
-exec cargo run -p treehouse-mock --bin treehouse -- watch "$repo" --interval "$interval" --continuous
+exec cargo run -p treehouse-mock --bin treehouse -- watch "$repo" --interval "$interval" --continuous --hot-reload
