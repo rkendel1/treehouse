@@ -173,6 +173,11 @@ Additional live artifacts written under `.treehouse/`:
 - `subsystem-contracts.json` (generated subsystem contract map)
 - `system-graph-timeline.json` (time-series architecture history)
 - `evidence/` (append-only unified evidence graph)
+- `knowledge/graph.json` (typed software knowledge graph)
+- `knowledge/nodes.json` (node projection)
+- `knowledge/edges.json` (edge projection)
+- `knowledge/timeline.json` (graph evolution timeline)
+- `knowledge/drift/report.json` (drift projection)
 
 Desktop repo continuous loop:
 
@@ -247,6 +252,16 @@ Direct CLI projection command from an artifact model:
 ```bash
 treehouse project <application-model.json> --target <postgres|convex|gateway|all> [--output dir]
 ```
+
+Query the software digital twin:
+
+```bash
+treehouse graph <repo-path> [--contains text] [--type node-type]
+treehouse why <repo-path> <term>
+treehouse drift <repo-path>
+```
+
+See `docs/software-knowledge-graph-v2.md` for the V2 model and roadmap.
 
 ### GitHub Repo Automation
 

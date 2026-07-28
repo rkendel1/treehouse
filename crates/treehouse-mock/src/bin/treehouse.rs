@@ -23,7 +23,9 @@ use treehouse_postgres::compile_postgres;
 use treehouse_scan::{run_scan, summary_markdown, ScanOutputFormat, ScanRequest};
 use treehouse_subsystem_engine::{discover_subsystems, SubsystemSignals};
 use treehouse_system_graph::{
-    append_graph_version, build_system_graph_from_evidence_snapshot, build_system_graph_version,
+    append_graph_version, append_knowledge_timeline_entry,
+    build_knowledge_graph_from_evidence_snapshot, build_system_graph_from_evidence_snapshot,
+    build_system_graph_version, KnowledgeDrift, KnowledgeGraph, KnowledgeTimeline,
     SystemGraphTimeline,
 };
 
@@ -447,6 +449,111 @@ fn main() -> Result<()> {
                 _ => bail!("unknown evidence command `{action}`"),
             }
         }
+        "graph" => {
+            let Some(repo_path) = args.next() else {
+                bail!("usage: treehouse graph <repo-path> [--contains text] [--type node-type]");
+            };
+            let mut contains = String::new();
+            let mut type_filter = String::new();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--contains" => contains = args.next().unwrap_or_default(),
+                    "--type" => type_filter = args.next().unwrap_or_default(),
+                    _ => bail!("unknown graph argument `{arg}`"),
+                }
+            }
+            let graph = load_knowledge_graph(Path::new(&repo_path))?;
+            let contains = contains.trim().to_ascii_lowercase();
+            let type_filter = type_filter.trim().to_ascii_lowercase();
+            let nodes: Vec<_> = graph
+                .nodes
+                .iter()
+                .filter(|node| {
+                    (contains.is_empty()
+                        || node.name.to_ascii_lowercase().contains(&contains)
+                        || node.id.to_ascii_lowercase().contains(&contains))
+                        && (type_filter.is_empty()
+                            || format!("{:?}", node.node_type).to_ascii_lowercase()
+                                == type_filter)
+                })
+                .cloned()
+                .collect();
+            let node_ids: std::collections::BTreeSet<_> =
+                nodes.iter().map(|node| node.id.clone()).collect();
+            let edges: Vec<_> = graph
+                .edges
+                .iter()
+                .filter(|edge| node_ids.contains(&edge.from) || node_ids.contains(&edge.to))
+                .cloned()
+                .collect();
+
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "repository": graph.repository,
+                    "version": graph.version,
+                    "nodes": nodes,
+                    "edges": edges,
+                }))?
+            );
+            Ok(())
+        }
+        "why" => {
+            let Some(repo_path) = args.next() else {
+                bail!("usage: treehouse why <repo-path> <term>");
+            };
+            let Some(term) = args.next() else {
+                bail!("usage: treehouse why <repo-path> <term>");
+            };
+            let graph = load_knowledge_graph(Path::new(&repo_path))?;
+            let term_lower = term.to_ascii_lowercase();
+            let matched: Vec<_> = graph
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.name.to_ascii_lowercase().contains(&term_lower)
+                        || node.id.to_ascii_lowercase().contains(&term_lower)
+                })
+                .cloned()
+                .collect();
+            let matched_ids: std::collections::BTreeSet<_> =
+                matched.iter().map(|node| node.id.clone()).collect();
+            let related_edges: Vec<_> = graph
+                .edges
+                .iter()
+                .filter(|edge| matched_ids.contains(&edge.from) || matched_ids.contains(&edge.to))
+                .cloned()
+                .collect();
+            let drift_findings: Vec<_> = graph
+                .drifts
+                .iter()
+                .filter(|drift| {
+                    drift.title.to_ascii_lowercase().contains(&term_lower)
+                        || drift.message.to_ascii_lowercase().contains(&term_lower)
+                })
+                .cloned()
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "term": term,
+                    "matches": matched,
+                    "related_edges": related_edges,
+                    "drift": drift_findings,
+                }))?
+            );
+            Ok(())
+        }
+        "drift" => {
+            let Some(repo_path) = args.next() else {
+                bail!("usage: treehouse drift <repo-path>");
+            };
+            let path = Path::new(&repo_path).join(".treehouse/knowledge/drift/report.json");
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("failed reading {}", path.display()))?;
+            println!("{}", content);
+            Ok(())
+        }
         _ => bail!("unknown command `{command}`.\n{}", usage()),
     }
 }
@@ -461,7 +568,10 @@ fn usage() -> &'static str {
     treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
   treehouse scan <repo-path> --target <path|name> [--local-llm [heuristic|ollama:<model>]] [--output dir] [--baseline-only] [--goals-only] [--format json|markdown]
   treehouse evidence query --repo <path> [--kind kind] [--subsystem id] [--since unix|YYYY-MM-DD]
-  treehouse evidence snapshot --repo <path> --output <file>"
+    treehouse evidence snapshot --repo <path> --output <file>
+    treehouse graph <repo-path> [--contains text] [--type node-type]
+    treehouse why <repo-path> <term>
+    treehouse drift <repo-path>"
 }
 
 fn parse_since(raw: &str) -> Result<u64> {
@@ -538,6 +648,14 @@ fn load_application_model(path: &Path) -> Result<ApplicationModel> {
         .with_context(|| format!("failed to read model file {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse application model {}", path.display()))
+}
+
+fn load_knowledge_graph(repo_path: &Path) -> Result<KnowledgeGraph> {
+    let path = repo_path.join(".treehouse/knowledge/graph.json");
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse knowledge graph {}", path.display()))
 }
 
 fn print_analysis(model: &ApplicationModel) {
@@ -624,10 +742,21 @@ fn run_watch(
         .unwrap_or_else(|| repo_path.join(".treehouse/system-diff.json"));
     let timeline_path = repo_path.join(".treehouse/system-graph-timeline.json");
     let contracts_path = repo_path.join(".treehouse/subsystem-contracts.json");
+    let knowledge_graph_path = repo_path.join(".treehouse/knowledge/graph.json");
+    let knowledge_nodes_path = repo_path.join(".treehouse/knowledge/nodes.json");
+    let knowledge_edges_path = repo_path.join(".treehouse/knowledge/edges.json");
+    let knowledge_drift_path = repo_path.join(".treehouse/knowledge/drift/report.json");
+    let knowledge_timeline_path = repo_path.join(".treehouse/knowledge/timeline.json");
 
     let existing = load_state(&state_path)?;
     let mut previous = existing.as_ref().map(|state| state.snapshot.clone());
     let mut timeline = load_graph_timeline(&timeline_path)?;
+    let mut knowledge_timeline = load_knowledge_timeline(&knowledge_timeline_path)?;
+    let repository_name = repo_path
+        .file_name()
+        .and_then(|part| part.to_str())
+        .unwrap_or("repository")
+        .to_string();
 
     println!("Watching application...");
     let mut index = 0_u64;
@@ -662,6 +791,38 @@ fn run_watch(
         ) {
             println!("{}", serde_json::to_string_pretty(&event)?);
         }
+
+        let mut drift_events = Vec::new();
+        for finding in &report.architecture_drift {
+            drift_events.push(KnowledgeDrift {
+                severity: "HIGH".to_string(),
+                title: "Architecture Drift".to_string(),
+                message: finding.clone(),
+                confidence: 0.85,
+            });
+        }
+        for drift in &report.drift_events {
+            drift_events.push(KnowledgeDrift {
+                severity: format!("{:?}", drift.recommendation.action),
+                title: format!("{:?}", drift.drift_type),
+                message: drift.recommendation.details.clone(),
+                confidence: 0.90,
+            });
+        }
+
+        let knowledge_graph = build_knowledge_graph_from_evidence_snapshot(
+            &repository_name,
+            current.generated_at_unix,
+            &evidence_snapshot,
+            drift_events,
+        );
+        save_knowledge_projection(&knowledge_graph_path, &knowledge_graph)?;
+        save_knowledge_nodes(&knowledge_nodes_path, &knowledge_graph.nodes)?;
+        save_knowledge_edges(&knowledge_edges_path, &knowledge_graph.edges)?;
+        save_knowledge_drift(&knowledge_drift_path, &knowledge_graph.drifts)?;
+        append_knowledge_timeline_entry(&mut knowledge_timeline, &knowledge_graph, 500);
+        save_knowledge_timeline(&knowledge_timeline_path, &knowledge_timeline)?;
+
         save_report(&report_path, &report)?;
         save_state(
             &state_path,
@@ -711,6 +872,69 @@ fn save_subsystem_contracts(
             .with_context(|| format!("failed creating contract directory {}", parent.display()))?;
     }
     let serialized = serde_json::to_string_pretty(contracts)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn load_knowledge_timeline(path: &Path) -> Result<KnowledgeTimeline> {
+    if !path.exists() {
+        return Ok(KnowledgeTimeline::default());
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed reading {}", path.display()))?;
+    let timeline = serde_json::from_str(&content)
+        .with_context(|| format!("failed parsing {}", path.display()))?;
+    Ok(timeline)
+}
+
+fn save_knowledge_timeline(path: &Path, timeline: &KnowledgeTimeline) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed creating knowledge timeline directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let serialized = serde_json::to_string_pretty(timeline)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn save_knowledge_projection(
+    path: &Path,
+    graph: &treehouse_system_graph::KnowledgeGraph,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating knowledge directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(graph)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn save_knowledge_nodes(path: &Path, nodes: &[treehouse_system_graph::KnowledgeNode]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating knowledge directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(nodes)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn save_knowledge_edges(path: &Path, edges: &[treehouse_system_graph::KnowledgeEdge]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating knowledge directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(edges)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn save_knowledge_drift(path: &Path, drifts: &[KnowledgeDrift]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating drift directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(drifts)?;
     fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
 }
 
