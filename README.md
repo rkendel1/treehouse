@@ -180,13 +180,14 @@ cargo run -p treehouse-app
 
 Implemented UX includes:
 - Open structured files
-- Tree/explorer navigation
-- Graph + intelligence panel
-- Search and JSONPath result panes
+- Progressive disclosure with Overview-first inferred model summary
+- Multi-pane layout with left navigation tree, center content views, right inspector, and bottom utility panel
+- Graph + intelligence panel with confidence filtering
+- Search, JSONPath, stats, and live System Diff result panes
 - Diff mode (open base file and compare)
-- Stats panel
 - Bookmarks and recent files
-- Command palette actions
+- Command palette actions with categories and descriptions
+- Focus mode and keyboard navigation shortcuts (Cmd/Ctrl+K palette, Cmd/Ctrl+D diff toggle, arrows/Enter/Esc tree navigation)
 
 ---
 
