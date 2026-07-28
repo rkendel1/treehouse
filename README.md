@@ -178,6 +178,11 @@ Additional live artifacts written under `.treehouse/`:
 - `knowledge/edges.json` (edge projection)
 - `knowledge/timeline.json` (graph evolution timeline)
 - `knowledge/drift/report.json` (drift projection)
+- `runtime/runtime.json` (continuous architecture runtime projection)
+- `runtime/health.json` (subsystem health scores)
+- `runtime/alarms.json` (architectural alarms)
+- `runtime/timeline.json` (runtime history per cycle)
+- `docs/architecture-runtime.md` (auto-generated architecture runtime documentation)
 
 Desktop repo continuous loop:
 
@@ -259,9 +264,17 @@ Query the software digital twin:
 treehouse graph <repo-path> [--contains text] [--type node-type]
 treehouse why <repo-path> <term>
 treehouse drift <repo-path>
+treehouse runtime <repo-path> [--health|--alarms|--timeline|--docs]
 ```
 
 See `docs/software-knowledge-graph-v2.md` for the V2 model and roadmap.
+See `docs/continuous-architecture-runtime-v1.md` for CAR v1 details.
+
+Start CAR in one command:
+
+```bash
+scripts/run-car.sh ~/Desktop/repo-a 2
+```
 
 ### GitHub Repo Automation
 

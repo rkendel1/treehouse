@@ -16,7 +16,7 @@ use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_model_inference::infer_application_model;
 use treehouse_parser::parse_structured_file;
 use treehouse_subsystem_engine::{discover_subsystems, SubsystemSignals};
-use treehouse_system_graph::{build_system_graph_version, Subsystem};
+use treehouse_system_graph::{KnowledgeGraph, build_system_graph_version, Subsystem};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotState {
@@ -65,6 +65,51 @@ pub struct SystemDiffReport {
     pub subsystem_alert: Option<String>,
     pub detected_subsystems: Vec<Subsystem>,
     pub drift_events: Vec<DriftEvent>,
+    pub architecture_confidence: u8,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeSubsystemHealth {
+    pub subsystem: String,
+    pub coupling: u8,
+    pub complexity: u8,
+    pub drift: u8,
+    pub ownership: u8,
+    pub contract_confidence: u8,
+    pub runtime_confidence: u8,
+    pub overall: u8,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeAlarm {
+    pub severity: String,
+    pub title: String,
+    pub message: String,
+    pub detected_at_unix: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContinuousArchitectureRuntime {
+    pub repository: String,
+    pub generated_at_unix: u64,
+    pub changed_files: Vec<String>,
+    pub affected_nodes: Vec<String>,
+    pub health: Vec<RuntimeSubsystemHealth>,
+    pub alarms: Vec<RuntimeAlarm>,
+    pub architecture_confidence: u8,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeTimeline {
+    pub entries: Vec<RuntimeTimelineEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeTimelineEntry {
+    pub generated_at_unix: u64,
+    pub changed_files: usize,
+    pub alarms: usize,
+    pub avg_health: u8,
     pub architecture_confidence: u8,
 }
 
@@ -547,6 +592,287 @@ pub fn save_report(path: &Path, report: &SystemDiffReport) -> Result<()> {
     }
     let serialized = serde_json::to_string_pretty(report)?;
     fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+pub fn build_continuous_architecture_runtime(
+    repo_root: &Path,
+    snapshot: &DevelopmentSnapshot,
+    report: &SystemDiffReport,
+    knowledge: &KnowledgeGraph,
+) -> ContinuousArchitectureRuntime {
+    let repository = repo_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repository")
+        .to_string();
+    let health = compute_runtime_health(report, snapshot);
+    let alarms = compute_runtime_alarms(report, snapshot, knowledge);
+    let changed_files = report.changed_files.clone();
+    let affected_nodes = affected_knowledge_nodes(changed_files.as_slice(), knowledge);
+
+    ContinuousArchitectureRuntime {
+        repository,
+        generated_at_unix: snapshot.generated_at_unix,
+        changed_files,
+        affected_nodes,
+        health,
+        alarms,
+        architecture_confidence: report.architecture_confidence,
+    }
+}
+
+pub fn append_runtime_timeline(
+    timeline: &mut RuntimeTimeline,
+    runtime: &ContinuousArchitectureRuntime,
+    keep_last: usize,
+) {
+    let avg_health = if runtime.health.is_empty() {
+        0
+    } else {
+        (runtime.health.iter().map(|h| h.overall as u32).sum::<u32>()
+            / runtime.health.len() as u32) as u8
+    };
+
+    timeline.entries.push(RuntimeTimelineEntry {
+        generated_at_unix: runtime.generated_at_unix,
+        changed_files: runtime.changed_files.len(),
+        alarms: runtime.alarms.len(),
+        avg_health,
+        architecture_confidence: runtime.architecture_confidence,
+    });
+
+    if keep_last > 0 && timeline.entries.len() > keep_last {
+        let overflow = timeline.entries.len() - keep_last;
+        timeline.entries.drain(0..overflow);
+    }
+}
+
+pub fn render_runtime_documentation(runtime: &ContinuousArchitectureRuntime) -> String {
+    let mut out = Vec::new();
+    out.push("# Continuous Architecture Runtime".to_string());
+    out.push(String::new());
+    out.push(format!("Repository: {}", runtime.repository));
+    out.push(format!("Generated: {}", runtime.generated_at_unix));
+    out.push(format!(
+        "Architecture confidence: {}%",
+        runtime.architecture_confidence
+    ));
+    out.push(String::new());
+
+    out.push("## Health".to_string());
+    if runtime.health.is_empty() {
+        out.push("No subsystem health available.".to_string());
+    } else {
+        for health in &runtime.health {
+            out.push(format!(
+                "- {}: overall {} (coupling {}, complexity {}, drift {}, ownership {}, contract {}, runtime {})",
+                health.subsystem,
+                health.overall,
+                health.coupling,
+                health.complexity,
+                health.drift,
+                health.ownership,
+                health.contract_confidence,
+                health.runtime_confidence
+            ));
+        }
+    }
+    out.push(String::new());
+
+    out.push("## Alarms".to_string());
+    if runtime.alarms.is_empty() {
+        out.push("No active architecture alarms.".to_string());
+    } else {
+        for alarm in &runtime.alarms {
+            out.push(format!(
+                "- [{}] {}: {}",
+                alarm.severity, alarm.title, alarm.message
+            ));
+        }
+    }
+    out.push(String::new());
+
+    out.push("## Changed Files".to_string());
+    if runtime.changed_files.is_empty() {
+        out.push("No changed files in current cycle.".to_string());
+    } else {
+        for file in &runtime.changed_files {
+            out.push(format!("- {}", file));
+        }
+    }
+
+    out.join("\n")
+}
+
+pub fn load_runtime_timeline(path: &Path) -> Result<RuntimeTimeline> {
+    if !path.exists() {
+        return Ok(RuntimeTimeline::default());
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed reading {}", path.display()))?;
+    let timeline = serde_json::from_str(&content)
+        .with_context(|| format!("failed parsing {}", path.display()))?;
+    Ok(timeline)
+}
+
+pub fn save_runtime_timeline(path: &Path, timeline: &RuntimeTimeline) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating runtime directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(timeline)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+pub fn save_runtime_projection(path: &Path, runtime: &ContinuousArchitectureRuntime) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating runtime directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(runtime)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+pub fn save_runtime_alarms(path: &Path, alarms: &[RuntimeAlarm]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating runtime directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(alarms)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+pub fn save_runtime_health(path: &Path, health: &[RuntimeSubsystemHealth]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating runtime directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(health)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+pub fn save_runtime_documentation(path: &Path, markdown: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating runtime docs directory {}", parent.display()))?;
+    }
+    fs::write(path, markdown).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn compute_runtime_health(
+    report: &SystemDiffReport,
+    snapshot: &DevelopmentSnapshot,
+) -> Vec<RuntimeSubsystemHealth> {
+    let mut out = Vec::new();
+    for subsystem in &report.detected_subsystems {
+        let coupling = ((subsystem.apis.len() + subsystem.workflows.len()) as f32 * 6.0)
+            .round()
+            .clamp(10.0, 100.0) as u8;
+        let complexity = ((subsystem.entities.len() + subsystem.events.len()) as f32 * 7.0)
+            .round()
+            .clamp(10.0, 100.0) as u8;
+        let drift = report
+            .architecture_drift
+            .iter()
+            .filter(|line| {
+                line.to_ascii_lowercase()
+                    .contains(&subsystem.id.to_ascii_lowercase())
+            })
+            .count() as u8;
+        let drift = (drift.saturating_mul(20)).clamp(0, 100);
+        let ownership = if subsystem.owner.is_some() { 85 } else { 40 };
+        let contract_confidence = (subsystem.confidence * 100.0).round().clamp(0.0, 100.0) as u8;
+        let runtime_confidence = if snapshot.runtime_events.is_empty() { 45 } else { 75 };
+        let overall = ((coupling as u32
+            + complexity as u32
+            + drift as u32
+            + ownership as u32
+            + contract_confidence as u32
+            + runtime_confidence as u32)
+            / 6) as u8;
+
+        out.push(RuntimeSubsystemHealth {
+            subsystem: subsystem.id.clone(),
+            coupling,
+            complexity,
+            drift,
+            ownership,
+            contract_confidence,
+            runtime_confidence,
+            overall,
+        });
+    }
+    out.sort_by(|a, b| a.subsystem.cmp(&b.subsystem));
+    out
+}
+
+fn compute_runtime_alarms(
+    report: &SystemDiffReport,
+    snapshot: &DevelopmentSnapshot,
+    knowledge: &KnowledgeGraph,
+) -> Vec<RuntimeAlarm> {
+    let mut alarms = Vec::new();
+    if !report.architecture_drift.is_empty() {
+        alarms.push(RuntimeAlarm {
+            severity: "CRITICAL".to_string(),
+            title: "Architecture drift detected".to_string(),
+            message: report.architecture_drift.join("; "),
+            detected_at_unix: snapshot.generated_at_unix,
+        });
+    }
+    if report.potential_breaks.len() >= 2 {
+        alarms.push(RuntimeAlarm {
+            severity: "HIGH".to_string(),
+            title: "Potential contract breaks".to_string(),
+            message: report.potential_breaks.join("; "),
+            detected_at_unix: snapshot.generated_at_unix,
+        });
+    }
+    if report.changed_files.len() > 25 {
+        alarms.push(RuntimeAlarm {
+            severity: "MEDIUM".to_string(),
+            title: "Subsystem-scale change set".to_string(),
+            message: format!(
+                "{} files changed in a single cycle",
+                report.changed_files.len()
+            ),
+            detected_at_unix: snapshot.generated_at_unix,
+        });
+    }
+    let weak_ownership = knowledge
+        .nodes
+        .iter()
+        .filter(|node| node.owner.is_none() && matches!(node.node_type, treehouse_system_graph::KnowledgeNodeType::Capability))
+        .count();
+    if weak_ownership > 5 {
+        alarms.push(RuntimeAlarm {
+            severity: "MEDIUM".to_string(),
+            title: "Ownership gaps".to_string(),
+            message: format!(
+                "{} capability nodes have no owner assignment",
+                weak_ownership
+            ),
+            detected_at_unix: snapshot.generated_at_unix,
+        });
+    }
+    alarms
+}
+
+fn affected_knowledge_nodes(changed_files: &[String], knowledge: &KnowledgeGraph) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for changed in changed_files {
+        let needle = changed.to_ascii_lowercase();
+        for node in &knowledge.nodes {
+            let haystack = node.name.to_ascii_lowercase();
+            if haystack.contains(&needle)
+                || node.id.to_ascii_lowercase().contains(&needle)
+                || needle.contains(&haystack)
+            {
+                out.insert(node.id.clone());
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {

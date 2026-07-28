@@ -15,8 +15,11 @@ use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_mock::run_mock_server;
 use treehouse_model_inference::infer_application_model;
 use treehouse_observer::{
-    append_snapshot_evidence, capture_snapshot, compute_system_diff, load_evidence_snapshot,
-    load_state, query_evidence, render_report, save_report, save_state, SnapshotState,
+    append_runtime_timeline, append_snapshot_evidence, build_continuous_architecture_runtime,
+    capture_snapshot, compute_system_diff, load_evidence_snapshot, load_runtime_timeline,
+    load_state, query_evidence, render_report, render_runtime_documentation, save_report,
+    save_runtime_alarms, save_runtime_documentation, save_runtime_health,
+    save_runtime_projection, save_runtime_timeline, save_state, SnapshotState,
 };
 use treehouse_parser::parse_structured_file;
 use treehouse_postgres::compile_postgres;
@@ -554,6 +557,35 @@ fn main() -> Result<()> {
             println!("{}", content);
             Ok(())
         }
+        "runtime" => {
+            let Some(repo_path) = args.next() else {
+                bail!(
+                    "usage: treehouse runtime <repo-path> [--health|--alarms|--timeline|--docs]"
+                );
+            };
+            let mut view = "runtime".to_string();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--health" => view = "health".to_string(),
+                    "--alarms" => view = "alarms".to_string(),
+                    "--timeline" => view = "timeline".to_string(),
+                    "--docs" => view = "docs".to_string(),
+                    _ => bail!("unknown runtime argument `{arg}`"),
+                }
+            }
+            let base = Path::new(&repo_path).join(".treehouse/runtime");
+            let path = match view.as_str() {
+                "health" => base.join("health.json"),
+                "alarms" => base.join("alarms.json"),
+                "timeline" => base.join("timeline.json"),
+                "docs" => Path::new(&repo_path).join(".treehouse/docs/architecture-runtime.md"),
+                _ => base.join("runtime.json"),
+            };
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("failed reading {}", path.display()))?;
+            println!("{}", content);
+            Ok(())
+        }
         _ => bail!("unknown command `{command}`.\n{}", usage()),
     }
 }
@@ -571,7 +603,8 @@ fn usage() -> &'static str {
     treehouse evidence snapshot --repo <path> --output <file>
     treehouse graph <repo-path> [--contains text] [--type node-type]
     treehouse why <repo-path> <term>
-    treehouse drift <repo-path>"
+    treehouse drift <repo-path>
+    treehouse runtime <repo-path> [--health|--alarms|--timeline|--docs]"
 }
 
 fn parse_since(raw: &str) -> Result<u64> {
@@ -747,11 +780,17 @@ fn run_watch(
     let knowledge_edges_path = repo_path.join(".treehouse/knowledge/edges.json");
     let knowledge_drift_path = repo_path.join(".treehouse/knowledge/drift/report.json");
     let knowledge_timeline_path = repo_path.join(".treehouse/knowledge/timeline.json");
+    let runtime_projection_path = repo_path.join(".treehouse/runtime/runtime.json");
+    let runtime_health_path = repo_path.join(".treehouse/runtime/health.json");
+    let runtime_alarms_path = repo_path.join(".treehouse/runtime/alarms.json");
+    let runtime_timeline_path = repo_path.join(".treehouse/runtime/timeline.json");
+    let runtime_docs_path = repo_path.join(".treehouse/docs/architecture-runtime.md");
 
     let existing = load_state(&state_path)?;
     let mut previous = existing.as_ref().map(|state| state.snapshot.clone());
     let mut timeline = load_graph_timeline(&timeline_path)?;
     let mut knowledge_timeline = load_knowledge_timeline(&knowledge_timeline_path)?;
+    let mut runtime_timeline = load_runtime_timeline(&runtime_timeline_path)?;
     let repository_name = repo_path
         .file_name()
         .and_then(|part| part.to_str())
@@ -822,6 +861,20 @@ fn run_watch(
         save_knowledge_drift(&knowledge_drift_path, &knowledge_graph.drifts)?;
         append_knowledge_timeline_entry(&mut knowledge_timeline, &knowledge_graph, 500);
         save_knowledge_timeline(&knowledge_timeline_path, &knowledge_timeline)?;
+
+        let runtime = build_continuous_architecture_runtime(
+            repo_path,
+            &current,
+            &report,
+            &knowledge_graph,
+        );
+        save_runtime_projection(&runtime_projection_path, &runtime)?;
+        save_runtime_health(&runtime_health_path, &runtime.health)?;
+        save_runtime_alarms(&runtime_alarms_path, &runtime.alarms)?;
+        append_runtime_timeline(&mut runtime_timeline, &runtime, 500);
+        save_runtime_timeline(&runtime_timeline_path, &runtime_timeline)?;
+        let runtime_docs = render_runtime_documentation(&runtime);
+        save_runtime_documentation(&runtime_docs_path, &runtime_docs)?;
 
         save_report(&report_path, &report)?;
         save_state(
