@@ -668,6 +668,31 @@ impl eframe::App for TreehouseApp {
                             ui.separator();
                             ui.label("Samples");
                             if let Some(observation) = observation {
+                                ui.label(format!(
+                                    "Observation Confidence: {:.0}%",
+                                    observation.confidence * 100.0
+                                ));
+                                ui.label(format!(
+                                    "Evidence Signals: {} (instances {}, sources {}, paths {}, temporal markers {})",
+                                    observation.evidence.total_signals,
+                                    observation.evidence.sample_instances,
+                                    observation.evidence.source_signals,
+                                    observation.evidence.sample_path_signals,
+                                    observation.evidence.temporal_markers
+                                ));
+                                ui.label(format!(
+                                    "Trend: {:?} (transitions {}, distinct markers {}, duplicate markers {})",
+                                    observation.trend.direction,
+                                    observation.trend.transitions,
+                                    observation.trend.distinct_markers,
+                                    observation.trend.duplicate_markers
+                                ));
+                                ui.label(format!(
+                                    "Timeline: {} -> {}",
+                                    observation.first_seen.as_deref().unwrap_or("unknown"),
+                                    observation.last_seen.as_deref().unwrap_or("unknown")
+                                ));
+
                                 if observation.sample_paths.is_empty() {
                                     ui.label("none");
                                 } else {
