@@ -103,8 +103,8 @@ pub fn capture_snapshot(repo_root: &Path) -> Result<DevelopmentSnapshot> {
     let graph = UniversalDataGraph::build(&sources);
     let model = infer_application_model(&graph, None);
 
-    let mut domains = infer_domains(&model.entities.iter().map(|entity| entity.name.as_str()));
-    domains.extend(infer_domains(&migration_tables.iter().map(String::as_str)));
+    let mut domains = infer_domains(model.entities.iter().map(|entity| entity.name.as_str()));
+    domains.extend(infer_domains(migration_tables.iter().map(String::as_str)));
     domains = dedupe_sorted(domains);
 
     Ok(DevelopmentSnapshot {
@@ -141,9 +141,9 @@ pub fn compute_system_diff(
 
     let changed_files = current.git_changes.clone();
     let code_symbols_added = set_added(&before.code_symbols, &current.code_symbols);
-    let code_symbols_removed = set_added(&current.code_symbols, &before.code_symbols);
+    let code_symbols_removed = set_removed(&before.code_symbols, &current.code_symbols);
     let entities_added = set_added(&before.entities, &current.entities);
-    let entities_removed = set_added(&current.entities, &before.entities);
+    let entities_removed = set_removed(&before.entities, &current.entities);
     let relationships_added = set_added(&before.relationships, &current.relationships);
     let api_added = set_added(&before.api_endpoints, &current.api_endpoints);
     let workflows_added = set_added(&before.workflows, &current.workflows);
@@ -628,13 +628,18 @@ fn set_added(before: &[String], after: &[String]) -> Vec<String> {
     out
 }
 
-fn infer_domains<'a, I>(names: &I) -> Vec<String>
+fn set_removed(before: &[String], after: &[String]) -> Vec<String> {
+    set_added(after, before)
+}
+
+fn infer_domains<I, S>(names: I) -> Vec<String>
 where
-    I: Iterator<Item = &'a str> + Clone,
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
 {
     let mut tags = BTreeSet::new();
-    for name in names.clone() {
-        let lower = name.to_ascii_lowercase();
+    for name in names {
+        let lower = name.as_ref().to_ascii_lowercase();
         if lower.contains("customer")
             || lower.contains("contact")
             || lower.contains("opportunity")
@@ -673,18 +678,23 @@ fn detect_architecture_drift(
     current: &DevelopmentSnapshot,
 ) -> Vec<String> {
     let before_set: BTreeSet<&str> = before.domains.iter().map(String::as_str).collect();
+    let new_domains: Vec<&str> = current
+        .domains
+        .iter()
+        .map(String::as_str)
+        .filter(|domain| !before_set.contains(*domain))
+        .collect();
+    let new_ratio = if current.domains.is_empty() {
+        0.0
+    } else {
+        new_domains.len() as f32 / current.domains.len() as f32
+    };
+    let confidence = (65.0 + (new_ratio * 30.0)).round().clamp(65.0, 95.0) as u8;
     let mut drift = Vec::new();
-    for domain in &current.domains {
-        if !before_set.contains(domain.as_str()) {
-            let confidence = if current.domains.is_empty() {
-                0_u8
-            } else {
-                ((100.0 / current.domains.len() as f32) + 70.0).min(99.0) as u8
-            };
-            drift.push(format!(
-                "New domain `{domain}` emerging (confidence: {confidence}%)"
-            ));
-        }
+    for domain in new_domains {
+        drift.push(format!(
+            "New domain `{domain}` emerging (confidence: {confidence}%)"
+        ));
     }
     drift.sort();
     drift
