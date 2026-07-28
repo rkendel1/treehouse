@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use treehouse_api_engine::TransactionFlow;
 
-use crate::{assertions::assert_status, environment::ExecutionEnvironment, fixtures::FixtureStore};
+use crate::{
+    assertions::{assert_status, StatusExpectation},
+    environment::ExecutionEnvironment,
+    fixtures::FixtureStore,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepExecution {
@@ -35,7 +39,7 @@ pub fn execute_flow(
                 method: step.method.clone(),
                 path: step.path.clone(),
                 status,
-                success: assert_status(expected, status),
+                success: assert_status(StatusExpectation::Exact(expected), status),
             }
         })
         .collect();

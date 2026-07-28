@@ -6,6 +6,9 @@ use crate::requests::build_happy_path_body;
 use crate::responses::ExpectedResponse;
 use crate::schemas::{extract_schema_catalog, first_string_field, required_fields};
 
+const COMMON_MAX_STRING_LENGTH: usize = 256;
+const BOUNDARY_STRING_LENGTH: usize = COMMON_MAX_STRING_LENGTH + 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScenarioKind {
     HappyPath,
@@ -47,25 +50,28 @@ pub fn generate_test_scenarios(spec: &Value) -> Vec<Scenario> {
             expected_status: ExpectedResponse::Success.status_code(),
         });
 
-        let mut validation_body = build_happy_path_body(schema);
-        if let Some(field) = required_fields(schema).first().cloned() {
+        for field in required_fields(schema) {
+            let mut validation_body = build_happy_path_body(schema);
             if let Some(obj) = validation_body.as_object_mut() {
-                obj.insert(field, Value::Null);
+                obj.insert(field.clone(), Value::Null);
             }
+            scenarios.push(Scenario {
+                name: format!(
+                    "{} {} validation error ({})",
+                    operation.method, operation.path, field
+                ),
+                method: operation.method.clone(),
+                path: operation.path.clone(),
+                kind: ScenarioKind::Validation,
+                body: validation_body,
+                expected_status: ExpectedResponse::ValidationError.status_code(),
+            });
         }
-        scenarios.push(Scenario {
-            name: format!("{} {} validation error", operation.method, operation.path),
-            method: operation.method.clone(),
-            path: operation.path.clone(),
-            kind: ScenarioKind::Validation,
-            body: validation_body,
-            expected_status: ExpectedResponse::ValidationError.status_code(),
-        });
 
         let mut boundary_body = build_happy_path_body(schema);
         if let Some(field) = first_string_field(schema) {
             if let Some(obj) = boundary_body.as_object_mut() {
-                obj.insert(field, Value::String("x".repeat(257)));
+                obj.insert(field, Value::String("x".repeat(BOUNDARY_STRING_LENGTH)));
             }
         }
         scenarios.push(Scenario {
@@ -120,7 +126,7 @@ mod tests {
         });
 
         let scenarios = generate_test_scenarios(&spec);
-        assert_eq!(scenarios.len(), 3);
+        assert_eq!(scenarios.len(), 4);
         assert!(scenarios
             .iter()
             .any(|scenario| scenario.kind == ScenarioKind::HappyPath));
