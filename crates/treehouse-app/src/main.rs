@@ -102,7 +102,10 @@ impl eframe::App for TreehouseApp {
                 ui.separator();
                 ui.label("Search:");
                 let changed = ui
-                    .add(egui::TextEdit::singleline(&mut self.search_query).hint_text("key/value/path"))
+                    .add(
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .hint_text("key/value/path"),
+                    )
                     .changed();
                 if changed {
                     self.refresh_search();
@@ -110,40 +113,44 @@ impl eframe::App for TreehouseApp {
             });
         });
 
-        egui::SidePanel::right("stats").resizable(true).show(ctx, |ui| {
-            ui.heading("Statistics");
-            if let Some(stats) = &self.stats {
-                ui.label(format!("Objects: {}", stats.objects));
-                ui.label(format!("Arrays: {}", stats.arrays));
-                ui.label(format!("Values: {}", stats.values));
-                ui.label(format!("Max depth: {}", stats.max_depth));
-                ui.label(format!("Largest array: {}", stats.largest_array));
-                ui.label(format!("Null values: {}", stats.null_count));
-                ui.separator();
-                ui.label("Most common keys:");
-                for (key, count) in &stats.most_common_keys {
-                    ui.label(format!("{} ({})", key, count));
+        egui::SidePanel::right("stats")
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.heading("Statistics");
+                if let Some(stats) = &self.stats {
+                    ui.label(format!("Objects: {}", stats.objects));
+                    ui.label(format!("Arrays: {}", stats.arrays));
+                    ui.label(format!("Values: {}", stats.values));
+                    ui.label(format!("Max depth: {}", stats.max_depth));
+                    ui.label(format!("Largest array: {}", stats.largest_array));
+                    ui.label(format!("Null values: {}", stats.null_count));
+                    ui.separator();
+                    ui.label("Most common keys:");
+                    for (key, count) in &stats.most_common_keys {
+                        ui.label(format!("{} ({})", key, count));
+                    }
+                } else {
+                    ui.label("Open a JSON file to calculate statistics.");
                 }
-            } else {
-                ui.label("Open a JSON file to calculate statistics.");
-            }
 
-            ui.separator();
-            ui.heading("Search Results");
-            egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                for m in &self.search_results {
-                    ui.monospace(format!("{} → {}", m.path, m.snippet));
-                }
-                if self.search_results.is_empty() {
-                    ui.label("No matches");
+                ui.separator();
+                ui.heading("Search Results");
+                egui::ScrollArea::vertical()
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        for m in &self.search_results {
+                            ui.monospace(format!("{} → {}", m.path, m.snippet));
+                        }
+                        if self.search_results.is_empty() {
+                            ui.label("No matches");
+                        }
+                    });
+
+                if let Some(err) = &self.error {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::RED, err);
                 }
             });
-
-            if let Some(err) = &self.error {
-                ui.separator();
-                ui.colored_label(egui::Color32::RED, err);
-            }
-        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(document) = &self.document {

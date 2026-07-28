@@ -26,7 +26,12 @@ pub fn analyze(document: &Document) -> DocumentStats {
     stats
 }
 
-fn walk(value: &Value, depth: usize, stats: &mut DocumentStats, key_counts: &mut HashMap<String, usize>) {
+fn walk(
+    value: &Value,
+    depth: usize,
+    stats: &mut DocumentStats,
+    key_counts: &mut HashMap<String, usize>,
+) {
     stats.max_depth = stats.max_depth.max(depth);
 
     match value {
@@ -63,7 +68,7 @@ mod tests {
     #[test]
     fn computes_basic_statistics() {
         let value: Value = serde_json::from_str(
-            "{\"users\":[{\"id\":1,\"name\":null},{\"id\":2}],\"active\":true}"
+            "{\"users\":[{\"id\":1,\"name\":null},{\"id\":2}],\"active\":true}",
         )
         .unwrap();
         let doc = Document::new(value, 60);
@@ -74,6 +79,9 @@ mod tests {
         assert_eq!(stats.largest_array, 2);
         assert_eq!(stats.null_count, 1);
         assert!(stats.max_depth >= 2);
-        assert!(stats.most_common_keys.iter().any(|(k, v)| k == "id" && *v == 2));
+        assert!(stats
+            .most_common_keys
+            .iter()
+            .any(|(k, v)| k == "id" && *v == 2));
     }
 }

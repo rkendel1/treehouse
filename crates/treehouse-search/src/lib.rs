@@ -78,10 +78,9 @@ mod tests {
 
     #[test]
     fn finds_key_and_value_matches() {
-        let value: Value = serde_json::from_str(
-            "{\"customerId\":\"abc\",\"orders\":[{\"status\":\"paid\"}]}"
-        )
-        .unwrap();
+        let value: Value =
+            serde_json::from_str("{\"customerId\":\"abc\",\"orders\":[{\"status\":\"paid\"}]}")
+                .unwrap();
         let doc = Document::new(value, 54);
 
         let key_matches = search_document(&doc, "customer");

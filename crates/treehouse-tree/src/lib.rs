@@ -42,7 +42,15 @@ impl TreeState {
 pub fn build_rows(document: &Document, state: &TreeState) -> Vec<TreeRow> {
     let mut rows = Vec::new();
     let mut offset = 0;
-    push_rows(document.root(), "$", "root", 0, state, &mut rows, &mut offset);
+    push_rows(
+        document.root(),
+        "$",
+        "root",
+        0,
+        state,
+        &mut rows,
+        &mut offset,
+    );
     rows
 }
 
@@ -115,7 +123,8 @@ mod tests {
 
     #[test]
     fn tree_respects_expansion_state() {
-        let value: Value = serde_json::from_str("{\"users\":[{\"name\":\"a\"},{\"name\":\"b\"}]}").unwrap();
+        let value: Value =
+            serde_json::from_str("{\"users\":[{\"name\":\"a\"},{\"name\":\"b\"}]}").unwrap();
         let doc = Document::new(value, 36);
 
         let mut state = TreeState::default();
