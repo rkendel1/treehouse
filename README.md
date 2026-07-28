@@ -16,6 +16,7 @@ It includes:
 treehouse/
 ├── crates/
 │   ├── treehouse-api-engine/
+│   ├── treehouse-agent/
 │   ├── treehouse-api/
 │   ├── treehouse-app/
 │   ├── treehouse-application-model/
@@ -23,6 +24,7 @@ treehouse/
 │   ├── treehouse-convex/
 │   ├── treehouse-core/
 │   ├── treehouse-diff/
+│   ├── treehouse-drift/
 │   ├── treehouse-execution/
 │   ├── treehouse-experience/
 │   ├── treehouse-graph/
@@ -37,6 +39,8 @@ treehouse/
 │   ├── treehouse-query/
 │   ├── treehouse-search/
 │   ├── treehouse-stats/
+│   ├── treehouse-subsystem-engine/
+│   ├── treehouse-system-graph/
 │   ├── treehouse-tree/
 │   └── treehouse-twin/
 ├── examples/
@@ -95,6 +99,10 @@ treehouse/
     - relationship/API/workflow deltas
     - potential breakage heuristics
     - architecture drift and subsystem-scale alerts
+- **treehouse-system-graph**: unified System Graph model with versioned subsystem snapshots and confidence tracking.
+- **treehouse-subsystem-engine**: subsystem boundary detection from code, APIs, workflows, events, and DB/runtime signals.
+- **treehouse-drift**: drift detection engine for duplicate capabilities, subsystem overlap, ownership violations, architectural drift, and model fragmentation.
+- **treehouse-agent**: local real-time architecture change agent event model used by `treehouse watch`.
 
 ---
 
@@ -147,6 +155,14 @@ Example:
 ```bash
 treehouse connect ./my-app --iterations 5 --interval 3
 ```
+
+### Real-Time Watch Agent
+
+```bash
+treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
+```
+
+Runs the same snapshot/diff loop as `connect`, plus architecture-change events containing drift findings and remediation recommendations.
 
 ---
 
@@ -217,4 +233,3 @@ This enables repository-level architecture feedback without waiting for deployme
 - memmap2
 - tiny_http
 - anyhow / thiserror
-

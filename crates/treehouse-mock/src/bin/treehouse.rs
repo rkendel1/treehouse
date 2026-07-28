@@ -6,8 +6,10 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use treehouse_agent::detect_architecture_change;
 use treehouse_application_model::ApplicationModel;
 use treehouse_convex::compile_convex;
+use treehouse_drift::OwnershipPolicy;
 use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_mock::run_mock_server;
 use treehouse_model_inference::infer_application_model;
@@ -17,6 +19,8 @@ use treehouse_observer::{
 };
 use treehouse_parser::parse_structured_file;
 use treehouse_postgres::compile_postgres;
+use treehouse_subsystem_engine::{discover_subsystems, SubsystemSignals};
+use treehouse_system_graph::build_system_graph_version;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -142,6 +146,52 @@ fn main() -> Result<()> {
                 iterations,
             )
         }
+        "watch" => {
+            let Some(repo_path) = args.next() else {
+                bail!(
+                    "usage: treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
+                );
+            };
+            let mut state_path = None;
+            let mut report_path = None;
+            let mut interval_secs = 2_u64;
+            let mut iterations = 1_u64;
+
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--state" => state_path = args.next().map(PathBuf::from),
+                    "--report" => report_path = args.next().map(PathBuf::from),
+                    "--interval" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| anyhow!("missing value for --interval"))?;
+                        interval_secs = raw
+                            .parse::<u64>()
+                            .with_context(|| format!("invalid --interval value: {raw}"))?;
+                    }
+                    "--iterations" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| anyhow!("missing value for --iterations"))?;
+                        iterations = raw
+                            .parse::<u64>()
+                            .with_context(|| format!("invalid --iterations value: {raw}"))?;
+                    }
+                    _ => bail!("unknown watch argument `{arg}`"),
+                }
+            }
+
+            if iterations == 0 {
+                bail!("--iterations must be at least 1");
+            }
+            run_watch(
+                Path::new(&repo_path),
+                state_path.as_deref(),
+                report_path.as_deref(),
+                interval_secs,
+                iterations,
+            )
+        }
         _ => bail!("unknown command `{command}`.\n{}", usage()),
     }
 }
@@ -151,7 +201,8 @@ fn usage() -> &'static str {
   treehouse mock <model-file>
   treehouse analyze <structured files...>
   treehouse compile --target <postgres|convex> [--output dir] <structured files...>
-  treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
+  treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
+  treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
 }
 
 fn analyze_inputs(paths: &[PathBuf]) -> Result<ApplicationModel> {
@@ -236,6 +287,25 @@ fn run_connect(
     interval_secs: u64,
     iterations: u64,
 ) -> Result<()> {
+    println!(
+        "treehouse connect is supported; for real-time architecture mode use `treehouse watch`."
+    );
+    run_watch(
+        repo_path,
+        state_path,
+        report_path,
+        interval_secs,
+        iterations,
+    )
+}
+
+fn run_watch(
+    repo_path: &Path,
+    state_path: Option<&Path>,
+    report_path: Option<&Path>,
+    interval_secs: u64,
+    iterations: u64,
+) -> Result<()> {
     let state_path = state_path
         .map(PathBuf::from)
         .unwrap_or_else(|| repo_path.join(".treehouse/development-state.json"));
@@ -246,10 +316,22 @@ fn run_connect(
     let existing = load_state(&state_path)?;
     let mut previous = existing.as_ref().map(|state| state.snapshot.clone());
 
+    println!("Watching application...");
     for index in 0..iterations {
         let current = capture_snapshot(repo_path)?;
         let report = compute_system_diff(previous.as_ref(), &current);
         println!("{}", render_report(&report));
+        let current_graph = snapshot_to_graph(&current, current.generated_at_unix);
+        let previous_graph = previous
+            .as_ref()
+            .map(|snapshot| snapshot_to_graph(snapshot, snapshot.generated_at_unix));
+        if let Some(event) = detect_architecture_change(
+            previous_graph.as_ref(),
+            &current_graph,
+            &default_ownership_policies(),
+        ) {
+            println!("{}", serde_json::to_string_pretty(&event)?);
+        }
         save_report(&report_path, &report)?;
         save_state(
             &state_path,
@@ -264,6 +346,42 @@ fn run_connect(
     }
 
     Ok(())
+}
+
+fn snapshot_to_graph(
+    snapshot: &treehouse_observer::DevelopmentSnapshot,
+    version: u64,
+) -> treehouse_system_graph::SystemGraphVersion {
+    let subsystems = discover_subsystems(&SubsystemSignals {
+        entities: snapshot.entities.clone(),
+        apis: snapshot.api_endpoints.clone(),
+        workflows: snapshot.workflows.clone(),
+        events: snapshot.runtime_events.clone(),
+        code_symbols: snapshot.code_symbols.clone(),
+        db_signals: snapshot.db_signals.clone(),
+    });
+    build_system_graph_version(version, subsystems, snapshot.relationships.clone())
+}
+
+fn default_ownership_policies() -> Vec<OwnershipPolicy> {
+    vec![
+        OwnershipPolicy {
+            subsystem: "Billing".to_string(),
+            owns: vec![
+                "Invoice".to_string(),
+                "Payment".to_string(),
+                "Subscription".to_string(),
+            ],
+        },
+        OwnershipPolicy {
+            subsystem: "Identity".to_string(),
+            owns: vec![
+                "User".to_string(),
+                "Tenant".to_string(),
+                "Session".to_string(),
+            ],
+        },
+    ]
 }
 
 #[cfg(test)]

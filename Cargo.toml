@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/treehouse-agent",
   "crates/treehouse-application-model",
   "crates/treehouse-api",
   "crates/treehouse-api-engine",
@@ -8,6 +9,7 @@ members = [
   "crates/treehouse-convex",
   "crates/treehouse-core",
   "crates/treehouse-diff",
+  "crates/treehouse-drift",
   "crates/treehouse-experience",
   "crates/treehouse-execution",
   "crates/treehouse-graph",
@@ -21,6 +23,8 @@ members = [
   "crates/treehouse-query",
   "crates/treehouse-search",
   "crates/treehouse-stats",
+  "crates/treehouse-subsystem-engine",
+  "crates/treehouse-system-graph",
   "crates/treehouse-tree",
   "crates/treehouse-twin",
   "crates/treehouse-observer",
