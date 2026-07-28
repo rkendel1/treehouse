@@ -1,4 +1,9 @@
-use std::{fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    path::{Path, PathBuf},
+    time::UNIX_EPOCH,
+};
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -16,6 +21,11 @@ const MAX_RECENT_FILES: usize = 12;
 const TREE_ROW_HEIGHT: f32 = 22.0;
 const GRAPH_ROW_HEIGHT: f32 = 22.0;
 const DIFF_ROW_HEIGHT: f32 = 24.0;
+const SYSTEM_DIFF_ROW_HEIGHT: f32 = 22.0;
+const GIT_STATUS_SEPARATOR_INDEX: usize = 2;
+const GIT_STATUS_PATH_OFFSET: usize = 3;
+// Default graph view hides relationships below 70% confidence to reduce visual noise.
+const GRAPH_CONFIDENCE_THRESHOLD: u8 = 70;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -27,9 +37,52 @@ fn main() -> eframe::Result<()> {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 struct PersistedState {
     recent_files: Vec<String>,
     bookmarks: Vec<String>,
+    workspace_layouts: BTreeMap<String, PersistedLayout>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct PersistedLayout {
+    explorer_view: ExplorerView,
+    bottom_tab: BottomTab,
+    show_navigation: bool,
+    show_inspector: bool,
+    show_bottom: bool,
+    focus_mode: bool,
+    show_all_graph_relationships: bool,
+}
+
+impl Default for PersistedLayout {
+    fn default() -> Self {
+        Self {
+            explorer_view: ExplorerView::Overview,
+            bottom_tab: BottomTab::SystemDiff,
+            show_navigation: true,
+            show_inspector: true,
+            show_bottom: true,
+            focus_mode: false,
+            show_all_graph_relationships: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct LiveSystemDiff {
+    summary: String,
+    changed_files: Vec<String>,
+    entities_added: Vec<String>,
+    relationships_added: Vec<String>,
+    api_added: Vec<String>,
+    workflows_added: Vec<String>,
+    new_capabilities: Vec<String>,
+    potential_breaks: Vec<String>,
+    architecture_drift: Vec<String>,
+    architecture_confidence: u8,
 }
 
 #[derive(Default)]
@@ -54,23 +107,57 @@ struct TreehouseApp {
     recent_files: Vec<PathBuf>,
     show_command_palette: bool,
     command_filter: String,
+    bottom_tab: BottomTab,
+    show_navigation: bool,
+    show_inspector: bool,
+    show_bottom: bool,
+    focus_mode: bool,
+    show_help_panel: bool,
+    show_all_graph_relationships: bool,
+    workspace_layouts: BTreeMap<String, PersistedLayout>,
+    live_system_diff: Option<LiveSystemDiff>,
+    live_system_diff_path: Option<PathBuf>,
+    live_system_diff_workspace: Option<PathBuf>,
+    live_system_diff_filter: String,
+    live_system_diff_mtime_unix: Option<u64>,
     error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 enum ExplorerView {
     #[default]
+    Overview,
     Tree,
     Graph,
     Diff,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+enum BottomTab {
+    Search,
+    JsonPath,
+    Stats,
+    #[default]
+    SystemDiff,
+}
+
 impl TreehouseApp {
     fn load() -> Self {
-        let mut app = Self::default();
+        let mut app = Self {
+            explorer_view: ExplorerView::Overview,
+            bottom_tab: BottomTab::SystemDiff,
+            show_navigation: true,
+            show_inspector: true,
+            show_bottom: true,
+            ..Self::default()
+        };
         if let Some(state) = load_persisted_state() {
             app.recent_files = state.recent_files.into_iter().map(PathBuf::from).collect();
             app.bookmarks = state.bookmarks;
+            app.workspace_layouts = state.workspace_layouts;
+            if let Some(layout) = app.workspace_layouts.get("default").cloned() {
+                app.apply_layout(layout);
+            }
         }
         app
     }
@@ -103,6 +190,7 @@ impl TreehouseApp {
     }
 
     fn apply_document(&mut self, parsed: ParsedDocument) {
+        self.load_workspace_layout_for_path(&parsed.path);
         let source_name = parsed.path.display().to_string();
         let graph = UniversalDataGraph::build(&[GraphSource {
             name: &source_name,
@@ -117,11 +205,13 @@ impl TreehouseApp {
         self.current_format = Some(parsed.format);
         self.stats = Some(analyze(&parsed.document));
         self.document = Some(parsed.document);
+        self.explorer_view = ExplorerView::Overview;
         self.refresh_diff();
         self.tree_state = TreeState::default();
         self.error = None;
         self.refresh_search();
         self.run_jsonpath_query();
+        self.try_connect_system_diff(false);
         self.push_recent(parsed.path);
         self.save_state();
     }
@@ -200,6 +290,26 @@ impl TreehouseApp {
         match command {
             PaletteCommand::OpenFile => self.open_file_dialog(),
             PaletteCommand::CompareFile => self.open_compare_file_dialog(),
+            PaletteCommand::ShowOverview => self.explorer_view = ExplorerView::Overview,
+            PaletteCommand::ShowTree => self.explorer_view = ExplorerView::Tree,
+            PaletteCommand::ShowGraph => self.explorer_view = ExplorerView::Graph,
+            PaletteCommand::ShowDiff => self.explorer_view = ExplorerView::Diff,
+            PaletteCommand::ToggleFocusMode => {
+                self.focus_mode = !self.focus_mode;
+                if self.focus_mode {
+                    self.explorer_view = ExplorerView::Tree;
+                }
+            }
+            PaletteCommand::ToggleSystemDiffPanel => self.show_bottom = !self.show_bottom,
+            PaletteCommand::ConnectSystemDiff => self.try_connect_system_diff(true),
+            PaletteCommand::DisconnectSystemDiff => {
+                self.live_system_diff = None;
+                self.live_system_diff_path = None;
+                self.live_system_diff_workspace = None;
+                self.live_system_diff_mtime_unix = None;
+            }
+            PaletteCommand::ResetLayout => self.reset_layout(),
+            PaletteCommand::ToggleHelpPanel => self.show_help_panel = !self.show_help_panel,
             PaletteCommand::AddBookmark => self.add_selected_bookmark(),
             PaletteCommand::ClearBookmarks => {
                 self.bookmarks.clear();
@@ -218,9 +328,13 @@ impl TreehouseApp {
             }
         }
         self.show_command_palette = false;
+        self.save_state();
     }
 
     fn save_state(&self) {
+        let mut workspace_layouts = self.workspace_layouts.clone();
+        workspace_layouts.insert(self.workspace_key(), self.current_layout());
+        workspace_layouts.insert("default".to_string(), self.current_layout());
         let state = PersistedState {
             recent_files: self
                 .recent_files
@@ -228,8 +342,52 @@ impl TreehouseApp {
                 .map(|p| p.display().to_string())
                 .collect(),
             bookmarks: self.bookmarks.clone(),
+            workspace_layouts,
         };
         save_persisted_state(&state);
+    }
+
+    fn load_workspace_layout_for_path(&mut self, path: &Path) {
+        if let Some(layout) = self
+            .workspace_layouts
+            .get(&workspace_key_from_path(path))
+            .cloned()
+        {
+            self.apply_layout(layout);
+        }
+    }
+
+    fn current_layout(&self) -> PersistedLayout {
+        PersistedLayout {
+            explorer_view: self.explorer_view,
+            bottom_tab: self.bottom_tab,
+            show_navigation: self.show_navigation,
+            show_inspector: self.show_inspector,
+            show_bottom: self.show_bottom,
+            focus_mode: self.focus_mode,
+            show_all_graph_relationships: self.show_all_graph_relationships,
+        }
+    }
+
+    fn apply_layout(&mut self, layout: PersistedLayout) {
+        self.explorer_view = layout.explorer_view;
+        self.bottom_tab = layout.bottom_tab;
+        self.show_navigation = layout.show_navigation;
+        self.show_inspector = layout.show_inspector;
+        self.show_bottom = layout.show_bottom;
+        self.focus_mode = layout.focus_mode;
+        self.show_all_graph_relationships = layout.show_all_graph_relationships;
+    }
+
+    fn reset_layout(&mut self) {
+        self.apply_layout(PersistedLayout::default());
+    }
+
+    fn workspace_key(&self) -> String {
+        self.current_file
+            .as_deref()
+            .map(workspace_key_from_path)
+            .unwrap_or_else(|| "default".to_string())
     }
 
     fn draw_tree(&mut self, ui: &mut egui::Ui, rows: &[TreeRow]) {
@@ -252,10 +410,13 @@ impl TreehouseApp {
                         self.tree_state.select_path(row.path.clone());
                     }
 
-                    ui.small(format!(
-                        "[{:?}] offset={} len={} children={}",
-                        row.node_type, row.meta.offset, row.meta.length, row.meta.child_count
-                    ));
+                    ui.small(format!("[{:?}]", row.node_type));
+                    if let Some((entity, confidence)) = row_inference_badge(row, &self.graph) {
+                        ui.small(format!("{entity} · {confidence}%"));
+                    }
+                    if row_changed_since_snapshot(row, &self.diff_entries) {
+                        ui.colored_label(egui::Color32::from_rgb(205, 140, 0), "changed");
+                    }
                 });
             }
         });
@@ -265,8 +426,13 @@ impl TreehouseApp {
         ui: &mut egui::Ui,
         graph: &UniversalDataGraph,
         selected_entity: &mut Option<String>,
+        show_all_relationships: &mut bool,
     ) {
         ui.heading("Graph View");
+        ui.checkbox(
+            show_all_relationships,
+            "Show all evidence (include low-confidence relationships)",
+        );
         ui.label("Detected Entities");
         for profile in &graph.intelligence {
             if ui
@@ -287,13 +453,26 @@ impl TreehouseApp {
 
         ui.separator();
         ui.label("Detected Relationships");
+        let relationships: Vec<&_> = if *show_all_relationships {
+            graph.relationships.iter().collect()
+        } else {
+            graph
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.confidence >= GRAPH_CONFIDENCE_THRESHOLD)
+                .collect()
+        };
+        if relationships.is_empty() {
+            ui.label("No relationships match the current confidence filter.");
+            return;
+        }
         egui::ScrollArea::vertical().show_rows(
             ui,
             GRAPH_ROW_HEIGHT,
-            graph.relationships.len(),
+            relationships.len(),
             |ui, row_range| {
                 for row_index in row_range {
-                    let relationship = &graph.relationships[row_index];
+                    let relationship = relationships[row_index];
                     let kind = match relationship.kind {
                         GraphEdgeKind::HasMany => "has many",
                         GraphEdgeKind::BelongsTo => "belongs to",
@@ -355,19 +534,340 @@ impl TreehouseApp {
             },
         );
     }
+
+    fn draw_overview(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Overview");
+        ui.label("Raw data is shown in neutral views. Inferred model details are highlighted with confidence.");
+        if let Some(graph) = &self.graph {
+            let entities = graph.intelligence.len();
+            let relationships = graph.relationships.len();
+            let avg_confidence = if entities == 0 {
+                0.0
+            } else {
+                graph.intelligence.iter().map(|p| p.confidence).sum::<f32>() / entities as f32
+            };
+
+            ui.separator();
+            ui.label(format!("Inferred entities: {entities}"));
+            ui.label(format!("Inferred relationships: {relationships}"));
+            ui.label(format!(
+                "Average model confidence: {:.0}%",
+                avg_confidence * 100.0
+            ));
+            if let Some(diff) = &self.live_system_diff {
+                ui.label(format!(
+                    "Live system confidence: {}%",
+                    diff.architecture_confidence
+                ));
+            }
+
+            ui.separator();
+            ui.label("Drill into inferred entities:");
+            egui::ScrollArea::vertical().show_rows(
+                ui,
+                GRAPH_ROW_HEIGHT,
+                graph.intelligence.len(),
+                |ui, row_range| {
+                    for row_index in row_range {
+                        let profile = &graph.intelligence[row_index];
+                        if ui
+                            .button(format!(
+                                "{} · {} instances · {:.0}% confidence",
+                                profile.name,
+                                profile.instances,
+                                profile.confidence * 100.0
+                            ))
+                            .clicked()
+                        {
+                            self.selected_entity = Some(profile.name.clone());
+                            self.explorer_view = ExplorerView::Graph;
+                        }
+                    }
+                },
+            );
+        } else {
+            ui.label("Drop or open a JSON/YAML/XML/TOML/CSV document to begin.");
+        }
+    }
+
+    fn draw_bottom_panel(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::SystemDiff, "System Diff");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Search, "Search");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::JsonPath, "JSONPath");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Stats, "Stats");
+        });
+        ui.separator();
+        match self.bottom_tab {
+            BottomTab::SystemDiff => self.draw_system_diff(ui),
+            BottomTab::Search => self.draw_search_results(ui),
+            BottomTab::JsonPath => self.draw_jsonpath_results(ui),
+            BottomTab::Stats => self.draw_stats(ui),
+        }
+    }
+
+    fn draw_search_results(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Search Results");
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for m in &self.search_results {
+                if ui.button(format!("{} → {}", m.path, m.snippet)).clicked() {
+                    self.tree_state.select_path(m.path.clone());
+                    self.explorer_view = ExplorerView::Tree;
+                }
+            }
+            if self.search_results.is_empty() {
+                ui.label("No matches");
+            }
+        });
+    }
+
+    fn draw_jsonpath_results(&mut self, ui: &mut egui::Ui) {
+        ui.heading("JSONPath Results");
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for m in &self.jsonpath_results {
+                let snippet = summarize_for_results(&m.value);
+                if ui.button(format!("{} → {}", m.path, snippet)).clicked() {
+                    self.tree_state.select_path(m.path.clone());
+                    self.explorer_view = ExplorerView::Tree;
+                }
+            }
+            if self.jsonpath_results.is_empty() {
+                ui.label("No results");
+            }
+        });
+    }
+
+    fn draw_stats(&self, ui: &mut egui::Ui) {
+        ui.heading("Statistics");
+        if let Some(stats) = &self.stats {
+            ui.label(format!("Objects: {}", stats.objects));
+            ui.label(format!("Arrays: {}", stats.arrays));
+            ui.label(format!("Values: {}", stats.values));
+            ui.label(format!("Max depth: {}", stats.max_depth));
+            ui.label(format!("Largest array: {}", stats.largest_array));
+            ui.label(format!("Null values: {}", stats.null_count));
+            ui.separator();
+            ui.label("Most common keys:");
+            for (key, count) in &stats.most_common_keys {
+                ui.label(format!("{} ({})", key, count));
+            }
+        } else {
+            ui.label("Open a file to calculate statistics.");
+        }
+    }
+
+    fn draw_system_diff(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Live System Diff");
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Connect").clicked() {
+                self.try_connect_system_diff(true);
+            }
+            if ui.button("Refresh").clicked() {
+                self.refresh_system_diff(true);
+            }
+            if ui.button("Disconnect").clicked() {
+                self.live_system_diff = None;
+                self.live_system_diff_path = None;
+                self.live_system_diff_workspace = None;
+                self.live_system_diff_mtime_unix = None;
+            }
+            if let Some(path) = &self.live_system_diff_path {
+                ui.monospace(path.display().to_string());
+            } else {
+                ui.label("Not connected");
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Filter:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.live_system_diff_filter)
+                    .hint_text("entity/api/workflow/drift text"),
+            );
+        });
+
+        let Some(diff) = self.live_system_diff.clone() else {
+            ui.label("Connect a repository to surface live architecture drift.");
+            return;
+        };
+
+        ui.label(&diff.summary);
+        ui.label(format!(
+            "Architecture confidence: {}%",
+            diff.architecture_confidence
+        ));
+
+        self.draw_system_diff_section(ui, "New capabilities", &diff.new_capabilities);
+        if let Some(rel) =
+            self.draw_system_diff_section(ui, "Relationship deltas", &diff.relationships_added)
+        {
+            self.search_query = rel;
+            self.refresh_search();
+            self.bottom_tab = BottomTab::Search;
+        }
+        if let Some(api) = self.draw_system_diff_section(ui, "API deltas", &diff.api_added) {
+            self.search_query = api;
+            self.refresh_search();
+            self.bottom_tab = BottomTab::Search;
+        }
+        if let Some(workflow) =
+            self.draw_system_diff_section(ui, "Workflow deltas", &diff.workflows_added)
+        {
+            self.search_query = workflow;
+            self.refresh_search();
+            self.bottom_tab = BottomTab::Search;
+        }
+        self.draw_system_diff_section(ui, "Potential breakage", &diff.potential_breaks);
+        self.draw_system_diff_section(ui, "Architecture drift alerts", &diff.architecture_drift);
+
+        ui.separator();
+        ui.label("Changed files");
+        egui::ScrollArea::vertical().show_rows(
+            ui,
+            SYSTEM_DIFF_ROW_HEIGHT,
+            diff.changed_files.len(),
+            |ui, row_range| {
+                for row_index in row_range {
+                    let changed = &diff.changed_files[row_index];
+                    if ui.button(changed).clicked() {
+                        self.open_system_diff_file(changed);
+                    }
+                }
+            },
+        );
+    }
+
+    fn draw_system_diff_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        entries: &[String],
+    ) -> Option<String> {
+        let filter = self.live_system_diff_filter.trim().to_ascii_lowercase();
+        let filtered: Vec<&String> = if filter.is_empty() {
+            entries.iter().collect()
+        } else {
+            entries
+                .iter()
+                .filter(|entry| entry.to_ascii_lowercase().contains(&filter))
+                .collect()
+        };
+        if filtered.is_empty() {
+            return None;
+        }
+        ui.separator();
+        ui.label(title);
+        let mut clicked: Option<String> = None;
+        for entry in filtered {
+            if ui.button(entry).clicked() {
+                clicked = Some(entry.clone());
+            }
+        }
+        clicked
+    }
+
+    fn open_system_diff_file(&mut self, changed: &str) {
+        let Some(root) = &self.live_system_diff_workspace else {
+            return;
+        };
+        let Some(rel) = parse_changed_file_path(changed) else {
+            return;
+        };
+        let path = root.join(rel);
+        if path.is_file() {
+            self.open_file_path(path);
+        }
+    }
+
+    fn try_connect_system_diff(&mut self, set_error_if_missing: bool) {
+        let Some((path, workspace)) = discover_system_diff_path(self.current_file.as_deref())
+        else {
+            if set_error_if_missing {
+                self.error = Some(
+                    "Could not find .treehouse/system-diff.json. Run `treehouse watch` or connect to a repository first."
+                        .to_string(),
+                );
+            }
+            return;
+        };
+        self.live_system_diff_path = Some(path);
+        self.live_system_diff_workspace = Some(workspace);
+        self.refresh_system_diff(true);
+    }
+
+    fn refresh_system_diff(&mut self, force: bool) {
+        let Some(path) = &self.live_system_diff_path else {
+            return;
+        };
+        let Ok(metadata) = fs::metadata(path) else {
+            self.live_system_diff = None;
+            return;
+        };
+        let modified_unix = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+        if !force && modified_unix == self.live_system_diff_mtime_unix {
+            return;
+        }
+        self.live_system_diff_mtime_unix = modified_unix;
+        match fs::read_to_string(path).and_then(|content| {
+            serde_json::from_str::<LiveSystemDiff>(&content)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+        }) {
+            Ok(report) => {
+                self.live_system_diff = Some(report);
+                self.error = None;
+            }
+            Err(err) => {
+                self.error = Some(format!(
+                    "Failed to read system diff {}: {err}",
+                    path.display()
+                ));
+            }
+        }
+    }
 }
 
 impl eframe::App for TreehouseApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if ctx.input(|i| i.key_pressed(egui::Key::K) && i.modifiers.command) {
-            self.show_command_palette = true;
-        }
-
+        let previous_layout = self.current_layout();
         let rows = self
             .document
             .as_ref()
             .map(|document| build_rows(document, &self.tree_state))
             .unwrap_or_default();
+
+        if ctx.input(|i| i.key_pressed(egui::Key::K) && i.modifiers.command) {
+            self.show_command_palette = true;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::D) && i.modifiers.command) {
+            self.explorer_view = if self.explorer_view == ExplorerView::Diff {
+                ExplorerView::Overview
+            } else {
+                ExplorerView::Diff
+            };
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if let Some(parent) = self.tree_state.selected_path().and_then(parent_path) {
+                self.tree_state.select_path(parent);
+            } else {
+                self.tree_state.clear_selection();
+            }
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+            select_adjacent_tree_row(&mut self.tree_state, &rows, 1);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+            select_adjacent_tree_row(&mut self.tree_state, &rows, -1);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if let Some(path) = self.tree_state.selected_path().map(str::to_string) {
+                self.tree_state.toggle(&path);
+            }
+        }
+        self.refresh_system_diff(false);
 
         let selected_row = self
             .tree_state
@@ -394,8 +894,27 @@ impl eframe::App for TreehouseApp {
                     self.open_compare_file_dialog();
                 }
 
+                if ui.button("Connect").clicked() {
+                    self.try_connect_system_diff(true);
+                }
                 if ui.button("Command Palette").clicked() {
                     self.show_command_palette = true;
+                }
+                if ui
+                    .button(if self.focus_mode {
+                        "Exit Focus"
+                    } else {
+                        "Focus Mode"
+                    })
+                    .clicked()
+                {
+                    self.focus_mode = !self.focus_mode;
+                    if self.focus_mode {
+                        self.explorer_view = ExplorerView::Tree;
+                    }
+                }
+                if ui.button("What am I looking at?").clicked() {
+                    self.show_help_panel = true;
                 }
 
                 if ui.button("Add Bookmark").clicked() {
@@ -403,6 +922,7 @@ impl eframe::App for TreehouseApp {
                 }
 
                 ui.separator();
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Overview, "Overview");
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Tree, "Tree View");
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Graph, "Graph View");
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Diff, "Diff View");
@@ -451,69 +971,65 @@ impl eframe::App for TreehouseApp {
             });
         });
 
-        egui::SidePanel::left("navigation")
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.heading("Bookmarks");
-                if self.bookmarks.is_empty() {
-                    ui.label("No bookmarks");
-                }
-
-                let mut remove_bookmark: Option<usize> = None;
-                let mut open_bookmark: Option<String> = None;
-                for (idx, path) in self.bookmarks.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        if ui.button("Go").clicked() {
-                            open_bookmark = Some(path.clone());
-                        }
-                        if ui.small_button("✕").clicked() {
-                            remove_bookmark = Some(idx);
-                        }
-                        ui.monospace(path);
-                    });
-                }
-                if let Some(idx) = remove_bookmark {
-                    self.bookmarks.remove(idx);
-                    self.save_state();
-                }
-                if let Some(path) = open_bookmark {
-                    self.tree_state.select_path(path);
-                }
-
-                ui.separator();
-                ui.heading("Recent Files");
-                if self.recent_files.is_empty() {
-                    ui.label("No recent files");
-                }
-                let mut open_recent: Option<PathBuf> = None;
-                for path in &self.recent_files {
-                    if ui.button(path.display().to_string()).clicked() {
-                        open_recent = Some(path.clone());
+        if self.show_navigation && !self.focus_mode {
+            egui::SidePanel::left("navigation")
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.heading("Document Tree");
+                    if self.document.is_some() {
+                        self.draw_tree(ui, &rows);
+                    } else {
+                        ui.label("Drop a JSON/YAML file or folder here.");
                     }
-                }
-                if let Some(path) = open_recent {
-                    self.open_file_path(path);
-                }
 
-                ui.separator();
-                ui.heading("Comparison");
-                if let Some(path) = &self.comparison_file {
-                    ui.label(path.display().to_string());
-                    ui.label(format!("Differences: {}", self.diff_entries.len()));
-                    if ui.small_button("Clear comparison").clicked() {
-                        self.comparison_file = None;
-                        self.comparison_format = None;
-                        self.comparison_document = None;
-                        self.refresh_diff();
+                    ui.separator();
+                    ui.heading("Bookmarks");
+                    if self.bookmarks.is_empty() {
+                        ui.label("No bookmarks");
                     }
-                } else {
-                    ui.label("No comparison file selected.");
-                }
-            });
 
-        egui::SidePanel::right("details")
-            .resizable(true)
-            .show(ctx, |ui| {
+                    let mut remove_bookmark: Option<usize> = None;
+                    let mut open_bookmark: Option<String> = None;
+                    for (idx, path) in self.bookmarks.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            if ui.button("Go").clicked() {
+                                open_bookmark = Some(path.clone());
+                            }
+                            if ui.small_button("✕").clicked() {
+                                remove_bookmark = Some(idx);
+                            }
+                            ui.monospace(path);
+                        });
+                    }
+                    if let Some(idx) = remove_bookmark {
+                        self.bookmarks.remove(idx);
+                        self.save_state();
+                    }
+                    if let Some(path) = open_bookmark {
+                        self.tree_state.select_path(path);
+                    }
+
+                    ui.separator();
+                    ui.heading("Recent Files");
+                    if self.recent_files.is_empty() {
+                        ui.label("No recent files");
+                    }
+                    let mut open_recent: Option<PathBuf> = None;
+                    for path in &self.recent_files {
+                        if ui.button(path.display().to_string()).clicked() {
+                            open_recent = Some(path.clone());
+                        }
+                    }
+                    if let Some(path) = open_recent {
+                        self.open_file_path(path);
+                    }
+                });
+        }
+
+        if self.show_inspector || self.focus_mode {
+            egui::SidePanel::right("details")
+                .resizable(true)
+                .show(ctx, |ui| {
                 ui.heading("Inspector");
                 if let Some(path) = self.tree_state.selected_path() {
                     ui.monospace(path);
@@ -542,24 +1058,6 @@ impl eframe::App for TreehouseApp {
                     ui.label(format!("Expandable: {}", row.expandable));
                 } else {
                     ui.label("No selected node.");
-                }
-
-                ui.separator();
-                ui.heading("Statistics");
-                if let Some(stats) = &self.stats {
-                    ui.label(format!("Objects: {}", stats.objects));
-                    ui.label(format!("Arrays: {}", stats.arrays));
-                    ui.label(format!("Values: {}", stats.values));
-                    ui.label(format!("Max depth: {}", stats.max_depth));
-                    ui.label(format!("Largest array: {}", stats.largest_array));
-                    ui.label(format!("Null values: {}", stats.null_count));
-                    ui.separator();
-                    ui.label("Most common keys:");
-                    for (key, count) in &stats.most_common_keys {
-                        ui.label(format!("{} ({})", key, count));
-                    }
-                } else {
-                    ui.label("Open a file to calculate statistics.");
                 }
 
                 ui.separator();
@@ -711,44 +1209,23 @@ impl eframe::App for TreehouseApp {
                     ui.label("Open a file to build graph intelligence.");
                 }
 
-                ui.separator();
-                ui.heading("Search Results");
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .show(ui, |ui| {
-                        for m in &self.search_results {
-                            if ui.button(format!("{} → {}", m.path, m.snippet)).clicked() {
-                                self.tree_state.select_path(m.path.clone());
-                            }
-                        }
-                        if self.search_results.is_empty() {
-                            ui.label("No matches");
-                        }
-                    });
-
-                ui.separator();
-                ui.heading("JSONPath Results");
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .show(ui, |ui| {
-                        for m in &self.jsonpath_results {
-                            let snippet = summarize_for_results(&m.value);
-                            if ui.button(format!("{} → {}", m.path, snippet)).clicked() {
-                                self.tree_state.select_path(m.path.clone());
-                            }
-                        }
-                        if self.jsonpath_results.is_empty() {
-                            ui.label("No results");
-                        }
-                    });
-
                 if let Some(err) = &self.error {
                     ui.separator();
                     ui.colored_label(egui::Color32::RED, err);
                 }
             });
+        }
+
+        if self.show_bottom && !self.focus_mode {
+            egui::TopBottomPanel::bottom("bottom_panel")
+                .resizable(true)
+                .show(ctx, |ui| {
+                    self.draw_bottom_panel(ui);
+                });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| match self.explorer_view {
+            ExplorerView::Overview => self.draw_overview(ui),
             ExplorerView::Tree => {
                 if self.document.is_some() {
                     self.draw_tree(ui, &rows);
@@ -760,7 +1237,12 @@ impl eframe::App for TreehouseApp {
             }
             ExplorerView::Graph => {
                 if let Some(graph) = &self.graph {
-                    Self::draw_graph(ui, graph, &mut self.selected_entity);
+                    Self::draw_graph(
+                        ui,
+                        graph,
+                        &mut self.selected_entity,
+                        &mut self.show_all_graph_relationships,
+                    );
                 } else {
                     ui.centered_and_justified(|ui| {
                         ui.heading("Open a file to generate the universal data graph");
@@ -782,7 +1264,15 @@ impl eframe::App for TreehouseApp {
                     );
 
                     for command in filtered_commands(&self.command_filter) {
-                        if ui.button(command.label()).clicked() {
+                        if ui
+                            .button(format!(
+                                "[{}] {} — {}",
+                                command.category(),
+                                command.label(),
+                                command.description()
+                            ))
+                            .clicked()
+                        {
                             self.execute_palette_command(command);
                         }
                     }
@@ -792,13 +1282,42 @@ impl eframe::App for TreehouseApp {
                     }
                 });
         }
+
+        if self.show_help_panel {
+            egui::Window::new("What am I looking at?")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label("Overview: high-level inferred entities and relationships with confidence.");
+                    ui.label("Tree View: raw source structure and exact data paths.");
+                    ui.label("Graph View: inferred model and relationship evidence.");
+                    ui.label("Diff View: structural changes between base and comparison documents.");
+                    ui.label("Bottom panel: Search, JSONPath, Stats, and live System Diff from `.treehouse/system-diff.json`.");
+                    if ui.button("Close").clicked() {
+                        self.show_help_panel = false;
+                    }
+                });
+        }
+
+        if self.current_layout() != previous_layout {
+            self.save_state();
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaletteCommand {
     OpenFile,
     CompareFile,
+    ConnectSystemDiff,
+    DisconnectSystemDiff,
+    ShowOverview,
+    ShowTree,
+    ShowGraph,
+    ShowDiff,
+    ToggleFocusMode,
+    ToggleSystemDiffPanel,
+    ToggleHelpPanel,
+    ResetLayout,
     AddBookmark,
     ClearBookmarks,
     ClearRecentFiles,
@@ -811,11 +1330,71 @@ impl PaletteCommand {
         match self {
             PaletteCommand::OpenFile => "Open File",
             PaletteCommand::CompareFile => "Compare File",
+            PaletteCommand::ConnectSystemDiff => "Connect Live System Diff",
+            PaletteCommand::DisconnectSystemDiff => "Disconnect Live System Diff",
+            PaletteCommand::ShowOverview => "Show Inferred Model Overview",
+            PaletteCommand::ShowTree => "Show Raw Tree",
+            PaletteCommand::ShowGraph => "Show Inferred Graph",
+            PaletteCommand::ShowDiff => "Compare With Base (Diff)",
+            PaletteCommand::ToggleFocusMode => "Toggle Focus Mode",
+            PaletteCommand::ToggleSystemDiffPanel => "Toggle Bottom Panel",
+            PaletteCommand::ToggleHelpPanel => "Toggle View Help",
+            PaletteCommand::ResetLayout => "Reset Layout",
             PaletteCommand::AddBookmark => "Add Bookmark",
             PaletteCommand::ClearBookmarks => "Clear Bookmarks",
             PaletteCommand::ClearRecentFiles => "Clear Recent Files",
             PaletteCommand::ClearSelection => "Clear Selection",
             PaletteCommand::ClearComparison => "Clear Comparison",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            PaletteCommand::OpenFile => "Open a structured document.",
+            PaletteCommand::CompareFile => "Choose a comparison file for structural diff.",
+            PaletteCommand::ConnectSystemDiff => {
+                "Attach `.treehouse/system-diff.json` for live architecture deltas."
+            }
+            PaletteCommand::DisconnectSystemDiff => "Detach the active system diff feed.",
+            PaletteCommand::ShowOverview => "View inferred entities/relationships first.",
+            PaletteCommand::ShowTree => "Inspect raw source data paths and values.",
+            PaletteCommand::ShowGraph => "Inspect inferred entities and relationship confidence.",
+            PaletteCommand::ShowDiff => "Switch to the structural diff view.",
+            PaletteCommand::ToggleFocusMode => "Hide extra panes for tree + inspector focus.",
+            PaletteCommand::ToggleSystemDiffPanel => {
+                "Show or hide bottom Search/JSONPath/Stats/System Diff panes."
+            }
+            PaletteCommand::ToggleHelpPanel => {
+                "Explain the currently visible view in plain language."
+            }
+            PaletteCommand::ResetLayout => "Restore default pane visibility and tabs.",
+            PaletteCommand::AddBookmark => "Bookmark the currently selected path.",
+            PaletteCommand::ClearBookmarks => "Remove all saved bookmarks.",
+            PaletteCommand::ClearRecentFiles => "Clear the recent files list.",
+            PaletteCommand::ClearSelection => "Unselect the active tree path.",
+            PaletteCommand::ClearComparison => "Clear the comparison document and diff.",
+        }
+    }
+
+    fn category(self) -> &'static str {
+        match self {
+            PaletteCommand::OpenFile | PaletteCommand::CompareFile => "File",
+            PaletteCommand::ConnectSystemDiff | PaletteCommand::DisconnectSystemDiff => {
+                "System Diff"
+            }
+            PaletteCommand::ShowOverview
+            | PaletteCommand::ShowTree
+            | PaletteCommand::ShowGraph
+            | PaletteCommand::ShowDiff
+            | PaletteCommand::ToggleFocusMode
+            | PaletteCommand::ToggleSystemDiffPanel
+            | PaletteCommand::ToggleHelpPanel
+            | PaletteCommand::ResetLayout => "View",
+            PaletteCommand::AddBookmark
+            | PaletteCommand::ClearBookmarks
+            | PaletteCommand::ClearRecentFiles
+            | PaletteCommand::ClearSelection
+            | PaletteCommand::ClearComparison => "Manage",
         }
     }
 }
@@ -824,6 +1403,16 @@ fn filtered_commands(filter: &str) -> Vec<PaletteCommand> {
     let all = [
         PaletteCommand::OpenFile,
         PaletteCommand::CompareFile,
+        PaletteCommand::ConnectSystemDiff,
+        PaletteCommand::DisconnectSystemDiff,
+        PaletteCommand::ShowOverview,
+        PaletteCommand::ShowTree,
+        PaletteCommand::ShowGraph,
+        PaletteCommand::ShowDiff,
+        PaletteCommand::ToggleFocusMode,
+        PaletteCommand::ToggleSystemDiffPanel,
+        PaletteCommand::ToggleHelpPanel,
+        PaletteCommand::ResetLayout,
         PaletteCommand::AddBookmark,
         PaletteCommand::ClearBookmarks,
         PaletteCommand::ClearRecentFiles,
@@ -837,8 +1426,142 @@ fn filtered_commands(filter: &str) -> Vec<PaletteCommand> {
     }
 
     all.into_iter()
-        .filter(|command| command.label().to_lowercase().contains(&filter))
+        .filter(|command| {
+            command.label().to_lowercase().contains(&filter)
+                || command.description().to_lowercase().contains(&filter)
+                || command.category().to_lowercase().contains(&filter)
+        })
         .collect()
+}
+
+fn workspace_key_from_path(path: &Path) -> String {
+    for ancestor in path.ancestors() {
+        if ancestor.join(".git").exists() {
+            return ancestor.display().to_string();
+        }
+    }
+    path.parent()
+        .map(|parent| parent.display().to_string())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn discover_system_diff_path(current_file: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    if let Some(file) = current_file {
+        for ancestor in file.ancestors() {
+            let candidate = ancestor.join(".treehouse/system-diff.json");
+            if candidate.is_file() {
+                return Some((candidate, ancestor.to_path_buf()));
+            }
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            let candidate = ancestor.join(".treehouse/system-diff.json");
+            if candidate.is_file() {
+                return Some((candidate, ancestor.to_path_buf()));
+            }
+        }
+    }
+    None
+}
+
+fn parse_changed_file_path(changed: &str) -> Option<&str> {
+    let trimmed = changed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    if bytes.len() > GIT_STATUS_PATH_OFFSET
+        && bytes[GIT_STATUS_SEPARATOR_INDEX] == b' '
+        && bytes[0].is_ascii()
+        && bytes[1].is_ascii()
+    {
+        return trimmed.get(GIT_STATUS_PATH_OFFSET..).map(str::trim);
+    }
+    Some(trimmed)
+}
+
+fn row_inference_badge(row: &TreeRow, graph: &Option<UniversalDataGraph>) -> Option<(String, u8)> {
+    let graph = graph.as_ref()?;
+    for profile in &graph.intelligence {
+        let needle = profile.name.to_ascii_lowercase();
+        if row.label.to_ascii_lowercase().contains(&needle)
+            || row.path.to_ascii_lowercase().contains(&needle)
+        {
+            return Some((
+                profile.name.clone(),
+                (profile.confidence * 100.0).round() as u8,
+            ));
+        }
+    }
+    None
+}
+
+fn row_changed_since_snapshot(row: &TreeRow, diff_entries: &[DiffEntry]) -> bool {
+    diff_entries.iter().any(|entry| {
+        if entry.path == row.path {
+            return true;
+        }
+        entry
+            .path
+            .strip_prefix(&row.path)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+    })
+}
+
+fn select_adjacent_tree_row(tree_state: &mut TreeState, rows: &[TreeRow], delta: isize) {
+    if rows.is_empty() {
+        return;
+    }
+
+    let current_idx = tree_state
+        .selected_path()
+        .and_then(|selected| rows.iter().position(|row| row.path == selected));
+    let next_idx = match current_idx {
+        Some(idx) if delta >= 0 => idx
+            .saturating_add(delta as usize)
+            .min(rows.len().saturating_sub(1)),
+        Some(idx) => idx.saturating_sub(delta.unsigned_abs()),
+        None => {
+            if delta < 0 {
+                rows.len().saturating_sub(1)
+            } else {
+                0
+            }
+        }
+    };
+    tree_state.select_path(rows[next_idx].path.clone());
+}
+
+fn parent_path(path: &str) -> Option<String> {
+    if path == "$" {
+        return None;
+    }
+    if !path.ends_with(']') {
+        if let Some(idx) = path.rfind('.') {
+            if idx == 0 {
+                return Some("$".to_string());
+            }
+            return Some(path[..idx].to_string());
+        }
+    }
+    if let Some(idx) = path.rfind(']') {
+        if let Some(start) = path[..idx].rfind('[') {
+            if start == 0 {
+                return Some("$".to_string());
+            }
+            return Some(path[..start].to_string());
+        }
+    }
+    if let Some(idx) = path.rfind('.') {
+        if idx == 0 {
+            Some("$".to_string())
+        } else {
+            Some(path[..idx].to_string())
+        }
+    } else {
+        Some("$".to_string())
+    }
 }
 
 fn summarize_for_results(value: &Value) -> String {
@@ -937,5 +1660,41 @@ fn save_persisted_state(state: &PersistedState) {
             "warning: failed to write persisted Treehouse state {}: {err}",
             path.display()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_path_navigates_up() {
+        assert_eq!(
+            parent_path("$.orders[0].items[2].sku"),
+            Some("$.orders[0].items[2]".to_string())
+        );
+        assert_eq!(
+            parent_path("$.orders[0].items[2]"),
+            Some("$.orders[0].items".to_string())
+        );
+        assert_eq!(parent_path("$.orders"), Some("$".to_string()));
+        assert_eq!(parent_path("$"), None);
+    }
+
+    #[test]
+    fn parses_git_status_changed_file_paths() {
+        assert_eq!(
+            parse_changed_file_path("M  crates/treehouse-app/src/main.rs"),
+            Some("crates/treehouse-app/src/main.rs")
+        );
+        assert_eq!(parse_changed_file_path("?? README.md"), Some("README.md"));
+        assert_eq!(parse_changed_file_path("README.md"), Some("README.md"));
+    }
+
+    #[test]
+    fn command_filter_matches_categories_and_descriptions() {
+        let commands = filtered_commands("system diff");
+        assert!(commands.contains(&PaletteCommand::ConnectSystemDiff));
+        assert!(commands.contains(&PaletteCommand::DisconnectSystemDiff));
     }
 }

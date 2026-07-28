@@ -101,7 +101,14 @@ fn classify_domain(value: &str) -> String {
     let lower = value.to_ascii_lowercase();
     if contains_any(
         &lower,
-        &["invoice", "payment", "subscription", "billing", "refund", "transaction"],
+        &[
+            "invoice",
+            "payment",
+            "subscription",
+            "billing",
+            "refund",
+            "transaction",
+        ],
     ) {
         return "Billing".to_string();
     }
