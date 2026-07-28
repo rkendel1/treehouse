@@ -322,11 +322,13 @@ treehouse/
 ├── crates/
 │   ├── treehouse-app/
 │   ├── treehouse-ui/
+│   ├── treehouse-api/
 │   ├── treehouse-core/
 │   ├── treehouse-diff/
 │   ├── treehouse-tree/
 │   ├── treehouse-parser/
 │   ├── treehouse-graph/
+│   ├── treehouse-mock/
 │   ├── treehouse-query/
 │   ├── treehouse-search/
 │   ├── treehouse-stats/
@@ -405,6 +407,16 @@ Future: JMESPath, XPath.
 
 Structural comparison engine.
 
+### treehouse-api
+
+- API surface generation from discovered entity schemas
+- Model-first request builder
+
+### treehouse-mock
+
+- Mock API runtime generated from structured model files
+- `treehouse mock <model-file>` and `treehouse-mock <model-file>`
+
 ### treehouse-stats
 
 Background analytics. Runs on worker threads.
@@ -472,13 +484,13 @@ Features:
 - Graph explorer projection
 - Data intelligence panel
 
-## Milestone 4 — Cross-Format Diff
+## Milestone 4 — API Studio
 
-- XML parser support
-- CSV parser support
-- Structural diff crate (`treehouse-diff`)
-- Compare-file workflow in app
-- Dedicated diff explorer view
+- New `treehouse-api` crate for API surface generation from discovered entities/schemas
+- Generated endpoints per entity (`GET /entities`, `GET /entities/{id}`, `POST /entities`, `PATCH /entities/{id}`)
+- Model-first request builder (required/optional fields + generated JSON body template)
+- New `treehouse-mock` runtime and `treehouse` CLI `mock` command
+- Local mock server at `localhost:4000` generated from discovered schemas
 
 ---
 
