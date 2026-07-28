@@ -1,0 +1,17 @@
+[package]
+name = "treehouse-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+treehouse-core = { path = "../treehouse-core" }
+treehouse-parser = { path = "../treehouse-parser" }
+treehouse-search = { path = "../treehouse-search" }
+treehouse-stats = { path = "../treehouse-stats" }
+treehouse-tree = { path = "../treehouse-tree" }
