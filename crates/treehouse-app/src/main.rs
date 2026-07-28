@@ -207,12 +207,17 @@ impl TreehouseApp {
 
     fn draw_graph(&mut self, ui: &mut egui::Ui, graph: &UniversalDataGraph) {
         ui.heading("Graph View");
-        ui.label("Entities");
+        ui.label("Detected Entities");
         for profile in &graph.intelligence {
             if ui
                 .selectable_label(
                     self.selected_entity.as_deref() == Some(profile.name.as_str()),
-                    format!("{} ({})", profile.name, profile.instances),
+                    format!(
+                        "{} ({}, {:.0}% confidence)",
+                        profile.name,
+                        profile.instances,
+                        profile.confidence * 100.0
+                    ),
                 )
                 .clicked()
             {
@@ -221,7 +226,7 @@ impl TreehouseApp {
         }
 
         ui.separator();
-        ui.label("Relationships");
+        ui.label("Detected Relationships");
         egui::ScrollArea::vertical().show_rows(
             ui,
             GRAPH_ROW_HEIGHT,
@@ -446,6 +451,35 @@ impl eframe::App for TreehouseApp {
                             .iter()
                             .find(|profile| profile.name == name)
                         {
+                            let schema = graph.schemas.iter().find(|schema| schema.name == name);
+                            let observation = graph
+                                .observations
+                                .iter()
+                                .find(|observation| observation.entity == name);
+                            let relationships: Vec<String> = graph
+                                .relationships
+                                .iter()
+                                .filter(|relationship| {
+                                    relationship.from == name || relationship.to == name
+                                })
+                                .map(|relationship| {
+                                    let label = match relationship.kind {
+                                        GraphEdgeKind::HasMany => "has many",
+                                        GraphEdgeKind::BelongsTo => "belongs to",
+                                        GraphEdgeKind::Related => "related to",
+                                        GraphEdgeKind::HasField => "has field",
+                                        GraphEdgeKind::DerivedFrom => "derived from",
+                                    };
+                                    format!(
+                                        "{} --{}--> {} ({}%)",
+                                        relationship.from,
+                                        label,
+                                        relationship.to,
+                                        relationship.confidence
+                                    )
+                                })
+                                .collect();
+
                             ui.label(format!("Entity: {}", profile.name));
                             ui.label(format!("Instances: {}", profile.instances));
                             ui.label(format!("Fields: {}", profile.fields));
@@ -476,6 +510,47 @@ impl eframe::App for TreehouseApp {
                                 }
                             ));
                             ui.label(format!("Sources: {}", profile.sources.join(", ")));
+
+                            ui.separator();
+                            ui.label("Field Definitions");
+                            if let Some(schema) = schema {
+                                for field in &schema.properties {
+                                    ui.label(format!(
+                                        "{}: {:?} (required {:.0}%, nullable {:.0}%, confidence {:.0}%)",
+                                        field.name,
+                                        field.kind,
+                                        field.required_ratio * 100.0,
+                                        field.nullable_ratio * 100.0,
+                                        field.confidence * 100.0
+                                    ));
+                                }
+                            } else {
+                                ui.label("No schema details available.");
+                            }
+
+                            ui.separator();
+                            ui.label("Relationships");
+                            if relationships.is_empty() {
+                                ui.label("none");
+                            } else {
+                                for relationship in relationships {
+                                    ui.label(relationship);
+                                }
+                            }
+
+                            ui.separator();
+                            ui.label("Samples");
+                            if let Some(observation) = observation {
+                                if observation.sample_paths.is_empty() {
+                                    ui.label("none");
+                                } else {
+                                    for path in &observation.sample_paths {
+                                        ui.monospace(path);
+                                    }
+                                }
+                            } else {
+                                ui.label("No sample paths available.");
+                            }
                         }
                     } else {
                         ui.label("No entity profiles detected yet.");
