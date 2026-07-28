@@ -184,6 +184,8 @@ mod tests {
                 update: true,
             }],
             api: Vec::new(),
+            experiences: Vec::new(),
+            integrations: Vec::new(),
             metadata: GenerationMetadata {
                 generated_by: "test".to_string(),
                 generated_at_unix: 0,
