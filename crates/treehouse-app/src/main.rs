@@ -205,13 +205,17 @@ impl TreehouseApp {
         });
     }
 
-    fn draw_graph(&mut self, ui: &mut egui::Ui, graph: &UniversalDataGraph) {
+    fn draw_graph(
+        ui: &mut egui::Ui,
+        graph: &UniversalDataGraph,
+        selected_entity: &mut Option<String>,
+    ) {
         ui.heading("Graph View");
         ui.label("Detected Entities");
         for profile in &graph.intelligence {
             if ui
                 .selectable_label(
-                    self.selected_entity.as_deref() == Some(profile.name.as_str()),
+                    selected_entity.as_deref() == Some(profile.name.as_str()),
                     format!(
                         "{} ({}, {:.0}% confidence)",
                         profile.name,
@@ -221,7 +225,7 @@ impl TreehouseApp {
                 )
                 .clicked()
             {
-                self.selected_entity = Some(profile.name.clone());
+                *selected_entity = Some(profile.name.clone());
             }
         }
 
@@ -248,7 +252,7 @@ impl TreehouseApp {
                         ))
                         .clicked()
                     {
-                        self.selected_entity = Some(relationship.from.clone());
+                        *selected_entity = Some(relationship.from.clone());
                     }
                 }
             },
@@ -607,8 +611,8 @@ impl eframe::App for TreehouseApp {
                 }
             }
             ExplorerView::Graph => {
-                if let Some(graph) = self.graph.clone() {
-                    self.draw_graph(ui, &graph);
+                if let Some(graph) = &self.graph {
+                    Self::draw_graph(ui, graph, &mut self.selected_entity);
                 } else {
                     ui.centered_and_justified(|ui| {
                         ui.heading("Open a file to generate the universal data graph");
