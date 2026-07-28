@@ -25,6 +25,7 @@ treehouse/
 │   ├── treehouse-core/
 │   ├── treehouse-diff/
 │   ├── treehouse-drift/
+│   ├── treehouse-evidence/
 │   ├── treehouse-execution/
 │   ├── treehouse-experience/
 │   ├── treehouse-graph/
@@ -100,6 +101,7 @@ treehouse/
     - potential breakage heuristics
     - architecture drift and subsystem-scale alerts
 - **treehouse-system-graph**: unified System Graph model with versioned subsystem snapshots and confidence tracking.
+- **treehouse-evidence**: typed append-only evidence graph store with snapshot/query/conflict helpers.
 - **treehouse-subsystem-engine**: subsystem boundary detection from code, APIs, workflows, events, and DB/runtime signals.
 - **treehouse-drift**: drift detection engine for duplicate capabilities, subsystem overlap, ownership violations, architectural drift, and model fragmentation.
 - **treehouse-agent**: local real-time architecture change agent event model used by `treehouse watch`.
@@ -167,6 +169,14 @@ Runs the same snapshot/diff loop as `connect`, plus architecture-change events c
 Additional live artifacts written under `.treehouse/`:
 - `subsystem-contracts.json` (generated subsystem contract map)
 - `system-graph-timeline.json` (time-series architecture history)
+- `evidence/` (append-only unified evidence graph)
+
+### Evidence Graph CLI
+
+```bash
+treehouse evidence query --repo . --kind entity --since 2026-07-01
+treehouse evidence snapshot --repo . --output evidence-snapshot.json
+```
 
 ---
 

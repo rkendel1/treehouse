@@ -10,6 +10,7 @@ members = [
   "crates/treehouse-core",
   "crates/treehouse-diff",
   "crates/treehouse-drift",
+  "crates/treehouse-evidence",
   "crates/treehouse-experience",
   "crates/treehouse-execution",
   "crates/treehouse-graph",

@@ -1,11 +1,11 @@
 [package]
-name = "treehouse-system-graph"
+name = "treehouse-evidence"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-treehouse-evidence = { path = "../treehouse-evidence" }

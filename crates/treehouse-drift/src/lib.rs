@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use treehouse_evidence::{EvidenceSnapshot, FileEvidenceStore};
 use treehouse_system_graph::SystemGraphVersion;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +47,24 @@ pub fn detect_drift(
         events.extend(detect_architecture_drift(before, current));
     }
     events
+}
+
+pub fn detect_evidence_conflicts(snapshot: &EvidenceSnapshot) -> Vec<DriftEvent> {
+    FileEvidenceStore::detect_conflicts(snapshot)
+        .into_iter()
+        .map(|conflict| DriftEvent {
+            drift_type: DriftType::ArchitectureDrift,
+            affected_subsystems: vec![],
+            evidence: vec![format!(
+                "Conflicting evidence nodes `{}` and `{}`",
+                conflict.from, conflict.to
+            )],
+            recommendation: Recommendation {
+                action: "Review evidence".to_string(),
+                details: "Resolve contradictory high-confidence observations.".to_string(),
+            },
+        })
+        .collect()
 }
 
 fn detect_duplicate_capabilities(current: &SystemGraphVersion) -> Vec<DriftEvent> {
@@ -265,5 +284,42 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.drift_type == DriftType::OwnershipViolation));
+    }
+
+    #[test]
+    fn converts_evidence_conflicts_into_drift_events() {
+        let left = treehouse_evidence::EvidenceNode::new(
+            treehouse_evidence::EvidenceKind::Entity {
+                name: "Invoice".to_string(),
+            },
+            1,
+            treehouse_evidence::Confidence::new(0.95, None),
+            treehouse_evidence::Provenance::new(treehouse_evidence::SourceKind::Entity, "a", "t"),
+            None,
+            serde_json::Value::Null,
+        );
+        let right = treehouse_evidence::EvidenceNode::new(
+            treehouse_evidence::EvidenceKind::Entity {
+                name: "Invoice".to_string(),
+            },
+            2,
+            treehouse_evidence::Confidence::new(0.95, None),
+            treehouse_evidence::Provenance::new(treehouse_evidence::SourceKind::Entity, "b", "t"),
+            None,
+            serde_json::Value::Null,
+        );
+        let snapshot = treehouse_evidence::EvidenceSnapshot {
+            observed_through_unix: 2,
+            nodes: vec![left.clone(), right.clone()],
+            edges: vec![treehouse_evidence::EvidenceEdge {
+                from: left.id,
+                to: right.id,
+                relation: treehouse_evidence::RelationKind::Contradicts,
+                confidence: treehouse_evidence::Confidence::new(0.91, None),
+                observed_at_unix: 2,
+            }],
+        };
+        let conflicts = detect_evidence_conflicts(&snapshot);
+        assert_eq!(conflicts.len(), 1);
     }
 }
