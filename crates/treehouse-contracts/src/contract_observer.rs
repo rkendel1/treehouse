@@ -7,6 +7,8 @@ use crate::contract_definition::{
     SubsystemContract,
 };
 
+const MIN_TOKEN_OVERLAP: usize = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ContractDriftKind {
     Data,
@@ -102,6 +104,7 @@ fn detect_data_drift(
 
     let mut drifts = Vec::new();
     for expected in declared {
+        let expected_entity = expected.entity.to_ascii_lowercase();
         let Some(actual) = observed_by_entity.get(expected.entity.as_str()).copied() else {
             drifts.push(ContractDrift {
                 kind: ContractDriftKind::Data,
@@ -110,7 +113,7 @@ fn detect_data_drift(
                 actual: "<missing>".to_string(),
                 affected_consumers: impacted_consumers(
                     dependencies,
-                    expected.entity.to_ascii_lowercase().as_str(),
+                    expected_entity.as_str(),
                     None,
                 ),
                 impacted_areas: vec!["entity availability".to_string()],
@@ -180,20 +183,16 @@ fn detect_api_drift(
 
     let mut drifts = Vec::new();
     for expected in declared {
+        let endpoint = format!("{} {}", expected.method, expected.path);
+        let endpoint_lower = endpoint.to_ascii_lowercase();
         let key = (expected.method.clone(), expected.path.clone());
         let Some(actual) = observed_by_key.get(&key).copied() else {
             drifts.push(ContractDrift {
                 kind: ContractDriftKind::Api,
                 message: format!("missing endpoint {} {}", expected.method, expected.path),
-                expected: format!("{} {}", expected.method, expected.path),
+                expected: endpoint.clone(),
                 actual: "<missing>".to_string(),
-                affected_consumers: impacted_consumers(
-                    dependencies,
-                    format!("{} {}", expected.method, expected.path)
-                        .to_ascii_lowercase()
-                        .as_str(),
-                    None,
-                ),
+                affected_consumers: impacted_consumers(dependencies, endpoint_lower.as_str(), None),
                 impacted_areas: vec!["integration".to_string()],
             });
             continue;
@@ -223,13 +222,7 @@ fn detect_api_drift(
                 ),
                 expected: expected.authorization.clone().unwrap_or_default(),
                 actual: actual.authorization.clone().unwrap_or_default(),
-                affected_consumers: impacted_consumers(
-                    dependencies,
-                    format!("{} {}", expected.method, expected.path)
-                        .to_ascii_lowercase()
-                        .as_str(),
-                    None,
-                ),
+                affected_consumers: impacted_consumers(dependencies, endpoint_lower.as_str(), None),
                 impacted_areas: vec!["authorization".to_string()],
             });
         }
@@ -250,17 +243,14 @@ fn detect_event_drift(
 
     let mut drifts = Vec::new();
     for expected in declared {
+        let event_name = expected.name.to_ascii_lowercase();
         let Some(actual) = observed_by_name.get(expected.name.as_str()).copied() else {
             drifts.push(ContractDrift {
                 kind: ContractDriftKind::Event,
                 message: format!("missing event {}", expected.name),
                 expected: expected.name.clone(),
                 actual: "<missing>".to_string(),
-                affected_consumers: impacted_consumers(
-                    dependencies,
-                    expected.name.to_ascii_lowercase().as_str(),
-                    None,
-                ),
+                affected_consumers: impacted_consumers(dependencies, event_name.as_str(), None),
                 impacted_areas: vec!["async processing".to_string()],
             });
             continue;
@@ -280,11 +270,7 @@ fn detect_event_drift(
                 message: format!("event ordering changed {}", expected.name),
                 expected: expected.ordering_key.clone().unwrap_or_default(),
                 actual: actual.ordering_key.clone().unwrap_or_default(),
-                affected_consumers: impacted_consumers(
-                    dependencies,
-                    expected.name.to_ascii_lowercase().as_str(),
-                    None,
-                ),
+                affected_consumers: impacted_consumers(dependencies, event_name.as_str(), None),
                 impacted_areas: vec!["event ordering".to_string()],
             });
         }
@@ -493,7 +479,7 @@ fn has_token_overlap(left: &str, right: &str) -> bool {
     let left_tokens: BTreeSet<&str> = left.split('.').filter(|token| !token.is_empty()).collect();
     let right_tokens: BTreeSet<&str> = right.split('.').filter(|token| !token.is_empty()).collect();
 
-    left_tokens.intersection(&right_tokens).count() >= 2
+    left_tokens.intersection(&right_tokens).count() >= MIN_TOKEN_OVERLAP
 }
 
 #[cfg(test)]

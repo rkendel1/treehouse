@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -102,14 +102,14 @@ fn impacted_consumers(
     previous_dependencies: &[ConsumerDependency],
     next_dependencies: &[ConsumerDependency],
 ) -> Vec<String> {
-    let mut by_name = BTreeMap::new();
+    let mut consumers = BTreeSet::new();
 
     for dependency in previous_dependencies
         .iter()
         .chain(next_dependencies.iter())
         .map(|dependency| dependency.consumer.clone())
     {
-        by_name.insert(dependency.clone(), dependency);
+        consumers.insert(dependency);
     }
 
     for consumer in drift_report
@@ -117,10 +117,10 @@ fn impacted_consumers(
         .iter()
         .flat_map(|drift| drift.affected_consumers.iter())
     {
-        by_name.insert(consumer.clone(), consumer.clone());
+        consumers.insert(consumer.clone());
     }
 
-    by_name.into_values().collect()
+    consumers.into_iter().collect()
 }
 
 fn is_breaking_change(

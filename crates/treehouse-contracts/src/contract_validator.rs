@@ -115,10 +115,10 @@ fn value_type(value: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Bool(_) => "boolean".to_string(),
         Value::Number(number) => {
-            if number.is_f64() {
-                "number".to_string()
-            } else {
+            if number.is_i64() || number.is_u64() {
                 "integer".to_string()
+            } else {
+                "number".to_string()
             }
         }
         Value::String(_) => "string".to_string(),
