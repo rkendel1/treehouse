@@ -392,13 +392,18 @@ fn infer_entity(
         ObservationTrend::Stable
     };
 
+    let observed_count = aggregate.samples.len()
+        + aggregate.sources.len()
+        + aggregate.sample_paths.len()
+        + temporal_markers.len();
+
     let observation = EntityObservation {
         entity: entity_name.to_string(),
         instances: aggregate.samples.len(),
         sources: aggregate.sources.clone(),
         sample_paths: aggregate.sample_paths.clone(),
         confidence: entity_confidence,
-        observed_count: aggregate.samples.len(),
+        observed_count,
         first_seen,
         last_seen,
         trend,
@@ -807,6 +812,6 @@ mod tests {
             Some("2026-02-01T00:00:00Z")
         );
         assert_eq!(observation.trend, ObservationTrend::Increasing);
-        assert_eq!(observation.observed_count, 2);
+        assert_eq!(observation.observed_count, 6);
     }
 }
