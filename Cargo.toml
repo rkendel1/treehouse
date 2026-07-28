@@ -17,6 +17,7 @@ members = [
   "crates/treehouse-identity",
   "crates/treehouse-migration",
   "crates/treehouse-mock",
+  "crates/treehouse-model-evolution",
   "crates/treehouse-model-inference",
   "crates/treehouse-parser",
   "crates/treehouse-postgres",
