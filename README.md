@@ -372,6 +372,33 @@ Universal Data Graph kernel:
 - Confidence scoring
 - Data intelligence profiles
 
+### treehouse-model-inference
+
+- Compiles Universal Data Graph entities into an application model IR
+- Detects entity fields, inferred relationships, workflow hints, and CRUD API shape
+
+### treehouse-application-model
+
+- Application model IR for:
+  - entities
+  - fields
+  - relationships
+  - constraints
+  - workflows
+  - permissions
+  - API endpoints
+  - generation metadata
+
+### treehouse-postgres
+
+- PostgreSQL compiler from application model IR
+- Generates schema SQL, migration SQL, seed SQL, API endpoint manifests, and docs
+
+### treehouse-convex
+
+- Convex compiler from application model IR
+- Generates `schema.ts` plus per-entity CRUD function files
+
 ### treehouse-tree
 
 Virtual tree:
@@ -416,6 +443,8 @@ Structural comparison engine.
 
 - Mock API runtime generated from structured model files
 - `treehouse mock <model-file>` and `treehouse-mock <model-file>`
+- `treehouse analyze <structured files...>`
+- `treehouse compile --target <postgres|convex> <structured files...>`
 
 ### treehouse-stats
 

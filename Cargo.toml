@@ -1,12 +1,16 @@
 [workspace]
 members = [
+  "crates/treehouse-application-model",
   "crates/treehouse-app",
   "crates/treehouse-api",
+  "crates/treehouse-convex",
   "crates/treehouse-core",
   "crates/treehouse-diff",
   "crates/treehouse-graph",
+  "crates/treehouse-model-inference",
   "crates/treehouse-mock",
   "crates/treehouse-parser",
+  "crates/treehouse-postgres",
   "crates/treehouse-query",
   "crates/treehouse-search",
   "crates/treehouse-stats",
