@@ -79,7 +79,9 @@ impl TreehouseApp {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Structured",
-                &["json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv"],
+                &[
+                    "json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv",
+                ],
             )
             .pick_file()
         else {
@@ -142,7 +144,9 @@ impl TreehouseApp {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Structured",
-                &["json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv"],
+                &[
+                    "json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv",
+                ],
             )
             .pick_file()
         else {
@@ -279,47 +283,6 @@ impl TreehouseApp {
             {
                 *selected_entity = Some(profile.name.clone());
             }
-
-            fn draw_diff(&mut self, ui: &mut egui::Ui) {
-                ui.heading("Diff View");
-                if self.document.is_none() {
-                    ui.label("Open a base file first.");
-                    return;
-                }
-                if self.comparison_document.is_none() {
-                    ui.label("Choose a comparison file.");
-                    return;
-                }
-
-                if self.diff_entries.is_empty() {
-                    ui.label("No structural differences detected.");
-                    return;
-                }
-
-                egui::ScrollArea::vertical().show_rows(
-                    ui,
-                    DIFF_ROW_HEIGHT,
-                    self.diff_entries.len(),
-                    |ui, row_range| {
-                        for row_index in row_range {
-                            let entry = &self.diff_entries[row_index];
-                            ui.horizontal_wrapped(|ui| {
-                                let badge = match entry.kind {
-                                    DiffKind::Added => "+",
-                                    DiffKind::Removed => "-",
-                                    DiffKind::Changed => "~",
-                                    DiffKind::TypeChanged => "±",
-                                };
-                                if ui.button(entry.path.clone()).clicked() {
-                                    self.tree_state.select_path(entry.path.clone());
-                                    self.explorer_view = ExplorerView::Tree;
-                                }
-                                ui.label(format!("{badge} {}", diff_summary(entry)));
-                            });
-                        }
-                    },
-                );
-            }
         }
 
         ui.separator();
@@ -347,6 +310,47 @@ impl TreehouseApp {
                     {
                         *selected_entity = Some(relationship.from.clone());
                     }
+                }
+            },
+        );
+    }
+
+    fn draw_diff(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Diff View");
+        if self.document.is_none() {
+            ui.label("Open a base file first.");
+            return;
+        }
+        if self.comparison_document.is_none() {
+            ui.label("Choose a comparison file.");
+            return;
+        }
+
+        if self.diff_entries.is_empty() {
+            ui.label("No structural differences detected.");
+            return;
+        }
+
+        egui::ScrollArea::vertical().show_rows(
+            ui,
+            DIFF_ROW_HEIGHT,
+            self.diff_entries.len(),
+            |ui, row_range| {
+                for row_index in row_range {
+                    let entry = &self.diff_entries[row_index];
+                    ui.horizontal_wrapped(|ui| {
+                        let badge = match entry.kind {
+                            DiffKind::Added => "+",
+                            DiffKind::Removed => "-",
+                            DiffKind::Changed => "~",
+                            DiffKind::TypeChanged => "±",
+                        };
+                        if ui.button(entry.path.clone()).clicked() {
+                            self.tree_state.select_path(entry.path.clone());
+                            self.explorer_view = ExplorerView::Tree;
+                        }
+                        ui.label(format!("{badge} {}", diff_summary(entry)));
+                    });
                 }
             },
         );

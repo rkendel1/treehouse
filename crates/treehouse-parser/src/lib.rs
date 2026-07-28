@@ -147,7 +147,7 @@ fn parse_csv(input: &str) -> Result<Value> {
                 .get(index)
                 .filter(|header| !header.trim().is_empty())
                 .map(ToOwned::to_owned)
-                .unwrap_or_else(|| format!("column_{index}"));
+                .unwrap_or_else(|| format!("column_{}", index + 1));
             object.insert(key, Value::String(value.to_string()));
         }
         rows.push(Value::Object(object));
@@ -216,8 +216,7 @@ mod tests {
         .unwrap();
         assert_eq!(xml.root_meta().node_type, treehouse_core::NodeType::Object);
 
-        let csv =
-            parse_str_with_format("id,name\n1,Alice\n2,Bob\n", DocumentFormat::Csv).unwrap();
+        let csv = parse_str_with_format("id,name\n1,Alice\n2,Bob\n", DocumentFormat::Csv).unwrap();
         assert_eq!(csv.root_meta().child_count, 2);
     }
 

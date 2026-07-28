@@ -49,7 +49,11 @@ pub struct BuiltRequest {
 }
 
 pub fn generate_api_surface(graph: &UniversalDataGraph) -> ApiSurface {
-    let mut entities: Vec<String> = graph.schemas.iter().map(|schema| schema.name.clone()).collect();
+    let mut entities: Vec<String> = graph
+        .schemas
+        .iter()
+        .map(|schema| schema.name.clone())
+        .collect();
     entities.sort();
     entities.dedup();
 
@@ -82,7 +86,10 @@ pub fn generate_api_surface(graph: &UniversalDataGraph) -> ApiSurface {
         });
     }
 
-    ApiSurface { entities, endpoints }
+    ApiSurface {
+        entities,
+        endpoints,
+    }
 }
 
 pub fn build_request(schema: &EntitySchema, intent: RequestIntent) -> BuiltRequest {
@@ -222,7 +229,10 @@ mod tests {
         assert_eq!(request.method, HttpMethod::Post);
         assert_eq!(request.required_fields, vec!["name", "email"]);
         assert!(request.optional_fields.iter().any(|field| field == "phone"));
-        assert!(request.optional_fields.iter().any(|field| field == "address"));
+        assert!(request
+            .optional_fields
+            .iter()
+            .any(|field| field == "address"));
         assert_eq!(
             request.body.get("name"),
             Some(&Value::String("<name>".to_string()))

@@ -6,11 +6,13 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use treehouse_api::{generate_api_surface, HttpMethod};
 use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_parser::parse_structured_file;
+
+const MAX_REQUEST_BODY_BYTES: u64 = 1_048_576;
 
 pub fn run_mock_server(model_path: &Path) -> Result<()> {
     let parsed = parse_structured_file(model_path)
@@ -39,7 +41,8 @@ pub fn run_mock_server(model_path: &Path) -> Result<()> {
         collections: Mutex::new(collections),
     });
 
-    let server = Server::http("127.0.0.1:4000").context("failed to bind localhost:4000")?;
+    let server = Server::http("127.0.0.1:4000")
+        .map_err(|err| anyhow!("failed to bind localhost:4000: {err}"))?;
     println!("Treehouse mock runtime listening on http://localhost:4000");
     for endpoint in &surface.endpoints {
         println!("{} {}", method_name(endpoint.method), endpoint.path);
@@ -92,7 +95,7 @@ fn handle_request(
         (Method::Post, None) => match read_json_body(request) {
             Ok(mut body) => {
                 if infer_id(&body).is_none() {
-                    let generated = format!("{}", entries.len() + 1);
+                    let generated = next_generated_id(entries);
                     if let Some(map) = body.as_object_mut() {
                         map.insert("id".to_string(), Value::String(generated));
                     }
@@ -135,12 +138,18 @@ fn parse_route(path: &str) -> Option<(String, Option<String>)> {
 }
 
 fn read_json_body(request: &mut tiny_http::Request) -> Result<Value> {
-    let mut body = String::new();
+    let mut body = Vec::new();
     request
         .as_reader()
-        .read_to_string(&mut body)
+        .take(MAX_REQUEST_BODY_BYTES + 1)
+        .read_to_end(&mut body)
         .context("failed reading request body")?;
-    serde_json::from_str(&body).context("request body is not valid JSON")
+    if body.len() as u64 > MAX_REQUEST_BODY_BYTES {
+        return Err(anyhow!(
+            "request body exceeds maximum size of {MAX_REQUEST_BODY_BYTES} bytes"
+        ));
+    }
+    serde_json::from_slice(&body).context("request body is not valid JSON")
 }
 
 fn merge_object(target: &mut Value, patch: &Value) {
@@ -172,6 +181,16 @@ fn as_id_string(value: &Value) -> Option<String> {
         Value::Number(v) => Some(v.to_string()),
         _ => None,
     }
+}
+
+fn next_generated_id(entries: &[Value]) -> String {
+    let mut max_numeric = 0_u64;
+    for id in entries.iter().filter_map(infer_id) {
+        if let Ok(parsed) = id.parse::<u64>() {
+            max_numeric = max_numeric.max(parsed);
+        }
+    }
+    (max_numeric + 1).to_string()
 }
 
 fn seed_collections(root: &Value, collections: &mut BTreeMap<String, Vec<Value>>) {
