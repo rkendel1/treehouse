@@ -8,5 +8,6 @@ authors.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+treehouse-contracts = { path = "../treehouse-contracts" }
 treehouse-drift = { path = "../treehouse-drift" }
 treehouse-system-graph = { path = "../treehouse-system-graph" }

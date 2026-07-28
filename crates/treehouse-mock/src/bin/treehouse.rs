@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use treehouse_agent::detect_architecture_change;
+use treehouse_agent::{detect_architecture_change_with_files, infer_subsystem_contracts};
 use treehouse_application_model::ApplicationModel;
 use treehouse_convex::compile_convex;
 use treehouse_drift::OwnershipPolicy;
@@ -20,7 +20,9 @@ use treehouse_observer::{
 use treehouse_parser::parse_structured_file;
 use treehouse_postgres::compile_postgres;
 use treehouse_subsystem_engine::{discover_subsystems, SubsystemSignals};
-use treehouse_system_graph::build_system_graph_version;
+use treehouse_system_graph::{
+    append_graph_version, build_system_graph_version, SystemGraphTimeline,
+};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -312,9 +314,12 @@ fn run_watch(
     let report_path = report_path
         .map(PathBuf::from)
         .unwrap_or_else(|| repo_path.join(".treehouse/system-diff.json"));
+    let timeline_path = repo_path.join(".treehouse/system-graph-timeline.json");
+    let contracts_path = repo_path.join(".treehouse/subsystem-contracts.json");
 
     let existing = load_state(&state_path)?;
     let mut previous = existing.as_ref().map(|state| state.snapshot.clone());
+    let mut timeline = load_graph_timeline(&timeline_path)?;
 
     println!("Watching application...");
     for index in 0..iterations {
@@ -325,10 +330,22 @@ fn run_watch(
         let previous_graph = previous
             .as_ref()
             .map(|snapshot| snapshot_to_graph(snapshot, snapshot.generated_at_unix));
-        if let Some(event) = detect_architecture_change(
+        if timeline.versions.is_empty() {
+            if let Some(previous_graph) = previous_graph.as_ref() {
+                append_graph_version(&mut timeline, previous_graph.clone(), 0);
+            }
+        }
+        append_graph_version(&mut timeline, current_graph.clone(), 0);
+        save_graph_timeline(&timeline_path, &timeline)?;
+
+        let subsystem_contracts = infer_subsystem_contracts(&current_graph);
+        save_subsystem_contracts(&contracts_path, &subsystem_contracts)?;
+
+        if let Some(event) = detect_architecture_change_with_files(
             previous_graph.as_ref(),
             &current_graph,
             &default_ownership_policies(),
+            &report.changed_files,
         ) {
             println!("{}", serde_json::to_string_pretty(&event)?);
         }
@@ -346,6 +363,38 @@ fn run_watch(
     }
 
     Ok(())
+}
+
+fn load_graph_timeline(path: &Path) -> Result<SystemGraphTimeline> {
+    if !path.exists() {
+        return Ok(SystemGraphTimeline::default());
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed reading {}", path.display()))?;
+    let timeline = serde_json::from_str(&content)
+        .with_context(|| format!("failed parsing {}", path.display()))?;
+    Ok(timeline)
+}
+
+fn save_graph_timeline(path: &Path, timeline: &SystemGraphTimeline) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating timeline directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(timeline)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn save_subsystem_contracts(
+    path: &Path,
+    contracts: &[treehouse_contracts::SubsystemContract],
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating contract directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(contracts)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
 }
 
 fn snapshot_to_graph(
