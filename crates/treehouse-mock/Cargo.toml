@@ -17,6 +17,10 @@ treehouse-model-inference = { path = "../treehouse-model-inference" }
 treehouse-observer = { path = "../treehouse-observer" }
 treehouse-parser = { path = "../treehouse-parser" }
 treehouse-postgres = { path = "../treehouse-postgres" }
+treehouse-agent = { path = "../treehouse-agent" }
+treehouse-drift = { path = "../treehouse-drift" }
+treehouse-subsystem-engine = { path = "../treehouse-subsystem-engine" }
+treehouse-system-graph = { path = "../treehouse-system-graph" }
 
 [[bin]]
 name = "treehouse-mock"

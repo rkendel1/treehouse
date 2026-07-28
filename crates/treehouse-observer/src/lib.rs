@@ -7,9 +7,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use treehouse_application_model::{ApiEndpoint, Integration, Relationship, Workflow};
+use treehouse_drift::{detect_drift, DriftEvent, OwnershipPolicy};
 use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_model_inference::infer_application_model;
 use treehouse_parser::parse_structured_file;
+use treehouse_subsystem_engine::{discover_subsystems, SubsystemSignals};
+use treehouse_system_graph::{build_system_graph_version, Subsystem};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotState {
@@ -56,6 +59,9 @@ pub struct SystemDiffReport {
     pub potential_breaks: Vec<String>,
     pub architecture_drift: Vec<String>,
     pub subsystem_alert: Option<String>,
+    pub detected_subsystems: Vec<Subsystem>,
+    pub drift_events: Vec<DriftEvent>,
+    pub architecture_confidence: u8,
 }
 
 pub fn capture_snapshot(repo_root: &Path) -> Result<DevelopmentSnapshot> {
@@ -201,7 +207,24 @@ pub fn compute_system_diff(
         );
     }
 
-    let architecture_drift = detect_architecture_drift(before, current);
+    let before_graph = snapshot_to_system_graph(before, before.generated_at_unix);
+    let current_graph = snapshot_to_system_graph(current, current.generated_at_unix);
+    let ownership_policies = default_ownership_policies();
+    let drift_events = detect_drift(Some(&before_graph), &current_graph, &ownership_policies);
+
+    let mut architecture_drift = detect_architecture_drift(before, current);
+    architecture_drift.extend(
+        drift_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.drift_type,
+                    treehouse_drift::DriftType::ArchitectureDrift
+                )
+            })
+            .filter_map(|event| event.evidence.first().cloned()),
+    );
+    architecture_drift = dedupe_sorted(architecture_drift);
     let subsystem_alert = detect_subsystem_alert(before, current);
 
     let summary = format!(
@@ -230,6 +253,11 @@ pub fn compute_system_diff(
         potential_breaks,
         architecture_drift,
         subsystem_alert,
+        detected_subsystems: current_graph.subsystems.clone(),
+        drift_events,
+        architecture_confidence: (current_graph.architecture_confidence * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8,
     }
 }
 
@@ -263,6 +291,30 @@ pub fn render_report(report: &SystemDiffReport) -> String {
     if let Some(alert) = &report.subsystem_alert {
         out.push(format!("Subsystem Alert: {alert}"));
     }
+    if !report.detected_subsystems.is_empty() {
+        out.push("Subsystems:".to_string());
+        for subsystem in &report.detected_subsystems {
+            out.push(format!(
+                "  ✓ {} (owner: {}, confidence: {:.0}%)",
+                subsystem.id,
+                subsystem.owner.as_deref().unwrap_or("unassigned"),
+                subsystem.confidence * 100.0
+            ));
+        }
+    }
+    if !report.drift_events.is_empty() {
+        out.push("Drift Events:".to_string());
+        for event in &report.drift_events {
+            out.push(format!(
+                "  ! {:?}: {}",
+                event.drift_type, event.recommendation.details
+            ));
+        }
+    }
+    out.push(format!(
+        "Architecture confidence: {}%",
+        report.architecture_confidence
+    ));
     out.join("\n")
 }
 
@@ -673,6 +725,51 @@ where
     tags.into_iter().collect()
 }
 
+fn snapshot_to_system_graph(
+    snapshot: &DevelopmentSnapshot,
+    version: u64,
+) -> treehouse_system_graph::SystemGraphVersion {
+    let subsystems = discover_subsystems(&SubsystemSignals {
+        entities: snapshot.entities.clone(),
+        apis: snapshot.api_endpoints.clone(),
+        workflows: snapshot.workflows.clone(),
+        events: snapshot.runtime_events.clone(),
+        code_symbols: snapshot.code_symbols.clone(),
+        db_signals: snapshot.db_signals.clone(),
+    });
+
+    build_system_graph_version(version, subsystems, snapshot.relationships.clone())
+}
+
+fn default_ownership_policies() -> Vec<OwnershipPolicy> {
+    vec![
+        OwnershipPolicy {
+            subsystem: "Billing".to_string(),
+            owns: vec![
+                "Invoice".to_string(),
+                "Payment".to_string(),
+                "Subscription".to_string(),
+            ],
+        },
+        OwnershipPolicy {
+            subsystem: "Identity".to_string(),
+            owns: vec![
+                "User".to_string(),
+                "Tenant".to_string(),
+                "Session".to_string(),
+            ],
+        },
+        OwnershipPolicy {
+            subsystem: "Notifications".to_string(),
+            owns: vec![
+                "Message".to_string(),
+                "Template".to_string(),
+                "Delivery".to_string(),
+            ],
+        },
+    ]
+}
+
 fn detect_architecture_drift(
     before: &DevelopmentSnapshot,
     current: &DevelopmentSnapshot,
@@ -775,6 +872,11 @@ mod tests {
             .architecture_drift
             .iter()
             .any(|drift| drift.contains("billing")));
+        assert!(diff
+            .detected_subsystems
+            .iter()
+            .any(|subsystem| subsystem.id == "Billing"));
+        assert!(diff.architecture_confidence > 0);
     }
 
     #[test]
@@ -793,6 +895,7 @@ mod tests {
         assert!(text.contains("Relationships"));
         assert!(text.contains("Potential Issues"));
         assert!(text.contains("Architecture Drift"));
+        assert!(text.contains("Architecture confidence"));
     }
 
     #[test]
