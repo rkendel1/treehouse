@@ -294,6 +294,9 @@ fn infer_experiences(entities: &[Entity]) -> Vec<Experience> {
     }]
 }
 
+const API_INTEGRATION_CONFIDENCE: f32 = 0.9;
+const EVENT_INTEGRATION_CONFIDENCE: f32 = 0.8;
+
 fn infer_integrations(graph: &UniversalDataGraph) -> Vec<Integration> {
     let mut sources = BTreeSet::new();
     for profile in &graph.intelligence {
@@ -315,14 +318,14 @@ fn infer_integrations(graph: &UniversalDataGraph) -> Vec<Integration> {
                     name: "API Integration".to_string(),
                     integration_type: "api".to_string(),
                     target: source,
-                    confidence: 0.9,
+                    confidence: API_INTEGRATION_CONFIDENCE,
                 })
             } else if lower.contains("event") || lower.contains("audit") || lower.contains("log") {
                 Some(Integration {
                     name: "Event Integration".to_string(),
                     integration_type: "event_stream".to_string(),
                     target: source,
-                    confidence: 0.8,
+                    confidence: EVENT_INTEGRATION_CONFIDENCE,
                 })
             } else {
                 None
@@ -394,19 +397,42 @@ mod tests {
             .api
             .iter()
             .any(|endpoint| endpoint.path == "/orders/:id"));
-        assert!(model
+        let order_workflow = model
             .workflows
             .iter()
-            .any(|workflow| workflow.entity == "Order"
-                && workflow.states.iter().any(|state| state == "created")));
-        assert!(model
+            .find(|workflow| workflow.entity == "Order")
+            .expect("expected Order workflow");
+        assert_eq!(
+            order_workflow.states,
+            vec!["created", "paid", "shipped", "completed"]
+        );
+        assert_eq!(order_workflow.transitions.len(), 3);
+        assert_eq!(order_workflow.transitions[0].from, "created");
+        assert_eq!(order_workflow.transitions[0].allowed, vec!["paid"]);
+
+        let app_experience = model
             .experiences
             .iter()
-            .flat_map(|experience| experience.screens.iter())
-            .any(|screen| screen.name == "Customer Detail"));
+            .find(|experience| experience.name == "Application Experience")
+            .expect("expected Application Experience");
+        assert!(app_experience
+            .screens
+            .iter()
+            .any(|screen| screen.name == "Customer Detail" && screen.route == "/customers/:id"));
+        assert!(app_experience
+            .screens
+            .iter()
+            .any(|screen| screen.name == "Create Order" && screen.route == "/orders/new"));
+
         assert!(model
             .integrations
             .iter()
-            .any(|integration| integration.integration_type == "api"));
+            .any(|integration| integration.integration_type == "api"
+                && integration.target == "openapi-orders.json"));
+        assert!(model
+            .integrations
+            .iter()
+            .any(|integration| integration.integration_type == "event_stream"
+                && integration.target == "orders-events.log"));
     }
 }
