@@ -2,6 +2,7 @@
 members = [
   "crates/treehouse-app",
   "crates/treehouse-core",
+  "crates/treehouse-graph",
   "crates/treehouse-parser",
   "crates/treehouse-query",
   "crates/treehouse-search",

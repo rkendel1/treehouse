@@ -4,6 +4,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use treehouse_core::Document;
+use treehouse_graph::{GraphEdgeKind, GraphSource, UniversalDataGraph};
 use treehouse_parser::{parse_structured_file, DocumentFormat, ParsedDocument};
 use treehouse_query::{query_json_path, value_at_path, QueryMatch};
 use treehouse_search::{search_document, SearchMatch};
@@ -12,6 +13,7 @@ use treehouse_tree::{build_rows, TreeRow, TreeState};
 
 const MAX_RECENT_FILES: usize = 12;
 const TREE_ROW_HEIGHT: f32 = 22.0;
+const GRAPH_ROW_HEIGHT: f32 = 22.0;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -39,11 +41,21 @@ struct TreehouseApp {
     stats: Option<DocumentStats>,
     jsonpath_query: String,
     jsonpath_results: Vec<QueryMatch>,
+    graph: Option<UniversalDataGraph>,
+    selected_entity: Option<String>,
+    explorer_view: ExplorerView,
     bookmarks: Vec<String>,
     recent_files: Vec<PathBuf>,
     show_command_palette: bool,
     command_filter: String,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ExplorerView {
+    #[default]
+    Tree,
+    Graph,
 }
 
 impl TreehouseApp {
@@ -82,6 +94,16 @@ impl TreehouseApp {
     }
 
     fn apply_document(&mut self, parsed: ParsedDocument) {
+        let source_name = parsed.path.display().to_string();
+        let graph = UniversalDataGraph::build(&[GraphSource {
+            name: &source_name,
+            document: &parsed.document,
+        }]);
+        self.selected_entity = graph
+            .intelligence
+            .first()
+            .map(|profile| profile.name.clone());
+        self.graph = Some(graph);
         self.current_file = Some(parsed.path.clone());
         self.current_format = Some(parsed.format);
         self.stats = Some(analyze(&parsed.document));
@@ -182,6 +204,51 @@ impl TreehouseApp {
             }
         });
     }
+
+    fn draw_graph(&mut self, ui: &mut egui::Ui, graph: &UniversalDataGraph) {
+        ui.heading("Graph View");
+        ui.label("Entities");
+        for profile in &graph.intelligence {
+            if ui
+                .selectable_label(
+                    self.selected_entity.as_deref() == Some(profile.name.as_str()),
+                    format!("{} ({})", profile.name, profile.instances),
+                )
+                .clicked()
+            {
+                self.selected_entity = Some(profile.name.clone());
+            }
+        }
+
+        ui.separator();
+        ui.label("Relationships");
+        egui::ScrollArea::vertical().show_rows(
+            ui,
+            GRAPH_ROW_HEIGHT,
+            graph.relationships.len(),
+            |ui, row_range| {
+                for row_index in row_range {
+                    let relationship = &graph.relationships[row_index];
+                    let kind = match relationship.kind {
+                        GraphEdgeKind::HasMany => "has many",
+                        GraphEdgeKind::BelongsTo => "belongs to",
+                        GraphEdgeKind::Related => "related to",
+                        GraphEdgeKind::HasField => "has field",
+                        GraphEdgeKind::DerivedFrom => "derived from",
+                    };
+                    if ui
+                        .button(format!(
+                            "{} --{}--> {} ({}%)",
+                            relationship.from, kind, relationship.to, relationship.confidence
+                        ))
+                        .clicked()
+                    {
+                        self.selected_entity = Some(relationship.from.clone());
+                    }
+                }
+            },
+        );
+    }
 }
 
 impl eframe::App for TreehouseApp {
@@ -225,6 +292,10 @@ impl eframe::App for TreehouseApp {
                 if ui.button("Add Bookmark").clicked() {
                     self.add_selected_bookmark();
                 }
+
+                ui.separator();
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Tree, "Tree View");
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Graph, "Graph View");
 
                 if let Some(path) = &self.current_file {
                     ui.separator();
@@ -360,6 +431,60 @@ impl eframe::App for TreehouseApp {
                 }
 
                 ui.separator();
+                ui.heading("Data Intelligence");
+                if let Some(graph) = &self.graph {
+                    let selected = self.selected_entity.clone().or_else(|| {
+                        graph
+                            .intelligence
+                            .first()
+                            .map(|profile| profile.name.clone())
+                    });
+
+                    if let Some(name) = selected {
+                        if let Some(profile) = graph
+                            .intelligence
+                            .iter()
+                            .find(|profile| profile.name == name)
+                        {
+                            ui.label(format!("Entity: {}", profile.name));
+                            ui.label(format!("Instances: {}", profile.instances));
+                            ui.label(format!("Fields: {}", profile.fields));
+                            ui.label(format!(
+                                "Primary Identifier: {}",
+                                profile
+                                    .primary_identifier
+                                    .as_deref()
+                                    .unwrap_or("not detected")
+                            ));
+                            ui.label(format!("Required: {:.0}%", profile.required_ratio * 100.0));
+                            ui.label(format!("Nullable: {:.0}%", profile.nullable_ratio * 100.0));
+                            ui.label(format!("Confidence: {:.0}%", profile.confidence * 100.0));
+                            ui.label(format!(
+                                "Related: {}",
+                                if profile.related.is_empty() {
+                                    "none".to_string()
+                                } else {
+                                    profile.related.join(", ")
+                                }
+                            ));
+                            ui.label(format!(
+                                "Detected PII: {}",
+                                if profile.detected_pii.is_empty() {
+                                    "none".to_string()
+                                } else {
+                                    profile.detected_pii.join(", ")
+                                }
+                            ));
+                            ui.label(format!("Sources: {}", profile.sources.join(", ")));
+                        }
+                    } else {
+                        ui.label("No entity profiles detected yet.");
+                    }
+                } else {
+                    ui.label("Open a file to build graph intelligence.");
+                }
+
+                ui.separator();
                 ui.heading("Search Results");
                 egui::ScrollArea::vertical()
                     .max_height(180.0)
@@ -396,13 +521,24 @@ impl eframe::App for TreehouseApp {
                 }
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.document.is_some() {
-                self.draw_tree(ui, &rows);
-            } else {
-                ui.centered_and_justified(|ui| {
-                    ui.heading("Open a JSON, YAML, or TOML file to start exploring");
-                });
+        egui::CentralPanel::default().show(ctx, |ui| match self.explorer_view {
+            ExplorerView::Tree => {
+                if self.document.is_some() {
+                    self.draw_tree(ui, &rows);
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.heading("Open a JSON, YAML, or TOML file to start exploring");
+                    });
+                }
+            }
+            ExplorerView::Graph => {
+                if let Some(graph) = self.graph.clone() {
+                    self.draw_graph(ui, &graph);
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.heading("Open a file to generate the universal data graph");
+                    });
+                }
             }
         });
 

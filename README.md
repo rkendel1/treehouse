@@ -325,12 +325,10 @@ treehouse/
 │   ├── treehouse-core/
 │   ├── treehouse-tree/
 │   ├── treehouse-parser/
+│   ├── treehouse-graph/
 │   ├── treehouse-query/
 │   ├── treehouse-search/
-│   ├── treehouse-schema/
-│   ├── treehouse-diff/
 │   ├── treehouse-stats/
-│   ├── treehouse-formats/
 │   └── treehouse-plugin/
 │
 ├── examples/
@@ -357,10 +355,19 @@ Streaming parsers:
 
 - JSON
 - YAML
-- XML
 - TOML
 
 Outputs lazy nodes.
+
+### treehouse-graph
+
+Universal Data Graph kernel:
+
+- Entity detection
+- Schema inference
+- Relationship detection
+- Confidence scoring
+- Data intelligence profiles
 
 ### treehouse-tree
 
@@ -455,15 +462,14 @@ Features:
 - Recent files
 - Command palette
 
-## Milestone 3 — Power Tools
+## Milestone 3 — Universal Data Graph
 
-- jq integration
-- Structural diff
-- Schema inference
-- Exporters
-- Plugin API
-- Performance profiling
-- Large-file benchmarking
+- Universal graph model
+- Schema inference engine
+- Entity detection
+- Relationship detection
+- Graph explorer projection
+- Data intelligence panel
 
 ---
 
