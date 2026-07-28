@@ -6,3 +6,15 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+treehouse-application-model = { path = "../treehouse-application-model" }
+treehouse-evidence = { path = "../treehouse-evidence" }
+treehouse-graph = { path = "../treehouse-graph" }
+treehouse-model-inference = { path = "../treehouse-model-inference" }
+treehouse-observer = { path = "../treehouse-observer" }
+treehouse-parser = { path = "../treehouse-parser" }
+treehouse-planner = { path = "../treehouse-planner" }
+treehouse-system-graph = { path = "../treehouse-system-graph" }
+treehouse-target = { path = "../treehouse-target" }

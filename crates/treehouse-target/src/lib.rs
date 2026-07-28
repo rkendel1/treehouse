@@ -1,4 +1,7 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -82,9 +85,7 @@ pub fn parse_target_markdown(markdown: &str) -> ScanTarget {
             match section {
                 Section::Constraints => constraints.push(item.trim().to_string()),
                 Section::Capabilities => desired_capabilities.push(item.trim().to_string()),
-                Section::General => {
-                    desired_capabilities.push(item.trim().to_string());
-                }
+                Section::General => desired_capabilities.push(item.trim().to_string()),
             }
             continue;
         }
@@ -100,14 +101,12 @@ pub fn parse_target_markdown(markdown: &str) -> ScanTarget {
         description_lines.join(" ")
     };
 
-    let style = infer_style(markdown);
-
     ScanTarget {
         name,
         description,
         constraints,
         desired_capabilities,
-        style,
+        style: infer_style(markdown),
     }
 }
 
@@ -147,9 +146,7 @@ fn resolve_target_path(repo_root: &Path, target: &str) -> Result<PathBuf> {
         }
     }
 
-    bail!(
-        "target `{target}` not found. Provide a path or create targets/{target}.md"
-    )
+    bail!("target `{target}` not found. Provide a file path or create targets/{target}.md")
 }
 
 fn infer_style(markdown: &str) -> ArchitectureStyle {

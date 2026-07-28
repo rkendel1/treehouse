@@ -171,6 +171,46 @@ Additional live artifacts written under `.treehouse/`:
 - `system-graph-timeline.json` (time-series architecture history)
 - `evidence/` (append-only unified evidence graph)
 
+### Target-Driven Scan
+
+```bash
+treehouse scan ./my-service \
+  --target ./targets/event-driven-microservice.md \
+  --output .treehouse/scan/
+
+# named target from ./targets
+treehouse scan ./my-service --target event-driven --local-llm heuristic
+```
+
+Flags:
+- `--target <path|name>`
+- `--local-llm [heuristic|ollama:<model>]`
+- `--output <dir>`
+- `--baseline-only`
+- `--goals-only`
+- `--format json|markdown`
+
+Generated artifacts:
+
+```text
+.treehouse/scan/<target>/
+├── baseline/
+│   ├── evidence-snapshot.json
+│   ├── application-model.json
+│   └── system-graph.json
+├── target/
+│   ├── inferred-architecture.json
+│   ├── goals.json
+│   └── plan.md
+├── gap/
+│   ├── analysis.md
+│   ├── files-to-add/
+│   ├── contracts-to-add/
+│   ├── migrations-to-add/
+│   └── api-surfaces-to-add/
+└── summary.json
+```
+
 ### Evidence Graph CLI
 
 ```bash

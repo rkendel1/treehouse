@@ -13,6 +13,7 @@ use treehouse_diff::{diff_documents, DiffEntry, DiffKind};
 use treehouse_graph::{GraphEdgeKind, GraphSource, UniversalDataGraph};
 use treehouse_parser::{parse_structured_file, DocumentFormat, ParsedDocument};
 use treehouse_query::{query_json_path, value_at_path, QueryMatch};
+use treehouse_scan::{run_scan, ScanOutputFormat, ScanRequest, ScanSummary};
 use treehouse_search::{search_document, SearchMatch};
 use treehouse_stats::{analyze, DocumentStats};
 use treehouse_tree::{build_rows, TreeRow, TreeState};
@@ -120,6 +121,13 @@ struct TreehouseApp {
     live_system_diff_workspace: Option<PathBuf>,
     live_system_diff_filter: String,
     live_system_diff_mtime_unix: Option<u64>,
+    scan_repo_path: String,
+    scan_target_path: String,
+    scan_output_path: String,
+    scan_use_local_llm: bool,
+    scan_local_llm_backend: String,
+    scan_status: Option<String>,
+    scan_summary: Option<ScanSummary>,
     error: Option<String>,
 }
 
@@ -129,6 +137,7 @@ enum ExplorerView {
     Overview,
     Tree,
     Graph,
+    Scan,
     Diff,
 }
 
@@ -293,6 +302,7 @@ impl TreehouseApp {
             PaletteCommand::ShowOverview => self.explorer_view = ExplorerView::Overview,
             PaletteCommand::ShowTree => self.explorer_view = ExplorerView::Tree,
             PaletteCommand::ShowGraph => self.explorer_view = ExplorerView::Graph,
+            PaletteCommand::ShowScan => self.explorer_view = ExplorerView::Scan,
             PaletteCommand::ShowDiff => self.explorer_view = ExplorerView::Diff,
             PaletteCommand::ToggleFocusMode => {
                 self.focus_mode = !self.focus_mode;
@@ -537,7 +547,9 @@ impl TreehouseApp {
 
     fn draw_overview(&mut self, ui: &mut egui::Ui) {
         ui.heading("Overview");
-        ui.label("Raw data is shown in neutral views. Inferred model details are highlighted with confidence.");
+        ui.label(
+            "Raw data is shown in neutral views. Inferred model details are highlighted with confidence.",
+        );
         if let Some(graph) = &self.graph {
             let entities = graph.intelligence.len();
             let relationships = graph.relationships.len();
@@ -587,6 +599,116 @@ impl TreehouseApp {
             );
         } else {
             ui.label("Drop or open a JSON/YAML/XML/TOML/CSV document to begin.");
+        }
+    }
+
+    fn draw_scan(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Scan");
+        ui.label("Run a target-driven architecture scan.");
+
+        ui.horizontal(|ui| {
+            ui.label("Repository:");
+            ui.add(egui::TextEdit::singleline(&mut self.scan_repo_path).desired_width(420.0));
+            if ui.button("Select").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    self.scan_repo_path = path.display().to_string();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Target:");
+            ui.add(egui::TextEdit::singleline(&mut self.scan_target_path).desired_width(420.0));
+            if ui.button("Select").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Markdown", &["md"])
+                    .pick_file()
+                {
+                    self.scan_target_path = path.display().to_string();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Output:");
+            ui.add(egui::TextEdit::singleline(&mut self.scan_output_path).desired_width(420.0));
+            if ui.button("Select").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    self.scan_output_path = path.display().to_string();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.scan_use_local_llm, "Use local LLM");
+            if self.scan_use_local_llm {
+                ui.label("Backend:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.scan_local_llm_backend)
+                        .hint_text("heuristic or ollama:<model>")
+                        .desired_width(220.0),
+                );
+            }
+        });
+
+        if ui.button("Start Scan").clicked() {
+            let repo_path = PathBuf::from(self.scan_repo_path.trim());
+            if self.scan_repo_path.trim().is_empty() {
+                self.error = Some("Scan repository path is required".to_string());
+            } else if self.scan_target_path.trim().is_empty() {
+                self.error = Some("Scan target path or name is required".to_string());
+            } else {
+                let output = if self.scan_output_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(self.scan_output_path.trim()))
+                };
+                let local_llm = if self.scan_use_local_llm {
+                    if self.scan_local_llm_backend.trim().is_empty() {
+                        Some("heuristic".to_string())
+                    } else {
+                        Some(self.scan_local_llm_backend.trim().to_string())
+                    }
+                } else {
+                    None
+                };
+                let request = ScanRequest {
+                    repo_path,
+                    target: Some(self.scan_target_path.trim().to_string()),
+                    output,
+                    local_llm,
+                    baseline_only: false,
+                    goals_only: false,
+                    format: ScanOutputFormat::Json,
+                };
+                match run_scan(&request) {
+                    Ok(result) => {
+                        self.scan_summary = Some(result.summary.clone());
+                        self.scan_status =
+                            Some(format!("Scan completed: {}", result.output_dir.display()));
+                        self.error = None;
+                    }
+                    Err(err) => {
+                        self.scan_status = None;
+                        self.error = Some(format!("Scan failed: {err}"));
+                    }
+                }
+            }
+        }
+
+        if let Some(status) = &self.scan_status {
+            ui.separator();
+            ui.label(status);
+        }
+        if let Some(summary) = &self.scan_summary {
+            ui.separator();
+            ui.label(format!("Baseline entities: {}", summary.baseline_entities));
+            ui.label(format!("Target entities: {}", summary.target_entities));
+            ui.label(format!("Goals: {}", summary.goals));
+            ui.label(format!("Missing files: {}", summary.missing_files));
+            ui.label(format!("Missing contracts: {}", summary.missing_contracts));
+            ui.label(format!(
+                "Missing migrations: {}",
+                summary.missing_migrations
+            ));
+            ui.label(format!("API gaps: {}", summary.api_gaps));
         }
     }
 
@@ -925,6 +1047,7 @@ impl eframe::App for TreehouseApp {
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Overview, "Overview");
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Tree, "Tree View");
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Graph, "Graph View");
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Scan, "Scan");
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Diff, "Diff View");
 
                 if let Some(path) = &self.current_file {
@@ -1249,6 +1372,7 @@ impl eframe::App for TreehouseApp {
                     });
                 }
             }
+            ExplorerView::Scan => self.draw_scan(ui),
             ExplorerView::Diff => self.draw_diff(ui),
         });
 
@@ -1290,6 +1414,7 @@ impl eframe::App for TreehouseApp {
                     ui.label("Overview: high-level inferred entities and relationships with confidence.");
                     ui.label("Tree View: raw source structure and exact data paths.");
                     ui.label("Graph View: inferred model and relationship evidence.");
+                    ui.label("Scan: choose repository, target, and output location, then start an architecture scan.");
                     ui.label("Diff View: structural changes between base and comparison documents.");
                     ui.label("Bottom panel: Search, JSONPath, Stats, and live System Diff from `.treehouse/system-diff.json`.");
                     if ui.button("Close").clicked() {
@@ -1313,6 +1438,7 @@ enum PaletteCommand {
     ShowOverview,
     ShowTree,
     ShowGraph,
+    ShowScan,
     ShowDiff,
     ToggleFocusMode,
     ToggleSystemDiffPanel,
@@ -1335,6 +1461,7 @@ impl PaletteCommand {
             PaletteCommand::ShowOverview => "Show Inferred Model Overview",
             PaletteCommand::ShowTree => "Show Raw Tree",
             PaletteCommand::ShowGraph => "Show Inferred Graph",
+            PaletteCommand::ShowScan => "Show Architecture Scan",
             PaletteCommand::ShowDiff => "Compare With Base (Diff)",
             PaletteCommand::ToggleFocusMode => "Toggle Focus Mode",
             PaletteCommand::ToggleSystemDiffPanel => "Toggle Bottom Panel",
@@ -1359,6 +1486,7 @@ impl PaletteCommand {
             PaletteCommand::ShowOverview => "View inferred entities/relationships first.",
             PaletteCommand::ShowTree => "Inspect raw source data paths and values.",
             PaletteCommand::ShowGraph => "Inspect inferred entities and relationship confidence.",
+            PaletteCommand::ShowScan => "Configure scan location/target and start the scan.",
             PaletteCommand::ShowDiff => "Switch to the structural diff view.",
             PaletteCommand::ToggleFocusMode => "Hide extra panes for tree + inspector focus.",
             PaletteCommand::ToggleSystemDiffPanel => {
@@ -1385,6 +1513,7 @@ impl PaletteCommand {
             PaletteCommand::ShowOverview
             | PaletteCommand::ShowTree
             | PaletteCommand::ShowGraph
+            | PaletteCommand::ShowScan
             | PaletteCommand::ShowDiff
             | PaletteCommand::ToggleFocusMode
             | PaletteCommand::ToggleSystemDiffPanel
@@ -1408,6 +1537,7 @@ fn filtered_commands(filter: &str) -> Vec<PaletteCommand> {
         PaletteCommand::ShowOverview,
         PaletteCommand::ShowTree,
         PaletteCommand::ShowGraph,
+        PaletteCommand::ShowScan,
         PaletteCommand::ShowDiff,
         PaletteCommand::ToggleFocusMode,
         PaletteCommand::ToggleSystemDiffPanel,
@@ -1696,5 +1826,6 @@ mod tests {
         let commands = filtered_commands("system diff");
         assert!(commands.contains(&PaletteCommand::ConnectSystemDiff));
         assert!(commands.contains(&PaletteCommand::DisconnectSystemDiff));
+        assert!(filtered_commands("scan").contains(&PaletteCommand::ShowScan));
     }
 }
