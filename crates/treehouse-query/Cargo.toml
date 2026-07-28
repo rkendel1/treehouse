@@ -1,5 +1,5 @@
 [package]
-name = "treehouse-parser"
+name = "treehouse-query"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,9 +7,5 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-memmap2.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
-toml.workspace = true
 treehouse-core = { path = "../treehouse-core" }

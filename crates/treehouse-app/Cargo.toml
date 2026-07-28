@@ -7,11 +7,15 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+dirs.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 treehouse-core = { path = "../treehouse-core" }
 treehouse-parser = { path = "../treehouse-parser" }
+treehouse-query = { path = "../treehouse-query" }
 treehouse-search = { path = "../treehouse-search" }
 treehouse-stats = { path = "../treehouse-stats" }
 treehouse-tree = { path = "../treehouse-tree" }
