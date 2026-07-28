@@ -1,0 +1,35 @@
+name: treehouse-observer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo files
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Treehouse watch snapshot
+        run: cargo run -p treehouse-mock --bin treehouse -- watch . --interval 1 --iterations 1
+
+      - name: Upload Treehouse artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: treehouse-observer-${{ github.run_id }}
+          path: |
+            .treehouse/development-state.json
+            .treehouse/system-diff.json
+            .treehouse/system-graph-timeline.json
+            .treehouse/subsystem-contracts.json
+          if-no-files-found: warn

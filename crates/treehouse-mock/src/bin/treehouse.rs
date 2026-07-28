@@ -108,13 +108,14 @@ fn main() -> Result<()> {
         "connect" => {
             let Some(repo_path) = args.next() else {
                 bail!(
-                    "usage: treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
+                    "usage: treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]"
                 );
             };
             let mut state_path = None;
             let mut report_path = None;
             let mut interval_secs = 2_u64;
             let mut iterations = 1_u64;
+            let mut continuous = false;
 
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -136,11 +137,12 @@ fn main() -> Result<()> {
                             .parse::<u64>()
                             .with_context(|| format!("invalid --iterations value: {raw}"))?;
                     }
+                    "--continuous" => continuous = true,
                     _ => bail!("unknown connect argument `{arg}`"),
                 }
             }
 
-            if iterations == 0 {
+            if !continuous && iterations == 0 {
                 bail!("--iterations must be at least 1");
             }
             run_connect(
@@ -148,19 +150,20 @@ fn main() -> Result<()> {
                 state_path.as_deref(),
                 report_path.as_deref(),
                 interval_secs,
-                iterations,
+                if continuous { None } else { Some(iterations) },
             )
         }
         "watch" => {
             let Some(repo_path) = args.next() else {
                 bail!(
-                    "usage: treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
+                    "usage: treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]"
                 );
             };
             let mut state_path = None;
             let mut report_path = None;
             let mut interval_secs = 2_u64;
             let mut iterations = 1_u64;
+            let mut continuous = false;
 
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -182,11 +185,12 @@ fn main() -> Result<()> {
                             .parse::<u64>()
                             .with_context(|| format!("invalid --iterations value: {raw}"))?;
                     }
+                    "--continuous" => continuous = true,
                     _ => bail!("unknown watch argument `{arg}`"),
                 }
             }
 
-            if iterations == 0 {
+            if !continuous && iterations == 0 {
                 bail!("--iterations must be at least 1");
             }
             run_watch(
@@ -194,7 +198,7 @@ fn main() -> Result<()> {
                 state_path.as_deref(),
                 report_path.as_deref(),
                 interval_secs,
-                iterations,
+                if continuous { None } else { Some(iterations) },
             )
         }
         "scan" => {
@@ -353,8 +357,8 @@ fn usage() -> &'static str {
   treehouse mock <model-file>
   treehouse analyze <structured files...>
   treehouse compile --target <postgres|convex> [--output dir] <structured files...>
-  treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
-  treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
+    treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
+    treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
   treehouse scan <repo-path> --target <path|name> [--local-llm [heuristic|ollama:<model>]] [--output dir] [--baseline-only] [--goals-only] [--format json|markdown]
   treehouse evidence query --repo <path> [--kind kind] [--subsystem id] [--since unix|YYYY-MM-DD]
   treehouse evidence snapshot --repo <path> --output <file>"
@@ -484,7 +488,7 @@ fn run_connect(
     state_path: Option<&Path>,
     report_path: Option<&Path>,
     interval_secs: u64,
-    iterations: u64,
+    iterations: Option<u64>,
 ) -> Result<()> {
     println!(
         "treehouse connect is supported; for real-time architecture mode use `treehouse watch`."
@@ -503,7 +507,7 @@ fn run_watch(
     state_path: Option<&Path>,
     report_path: Option<&Path>,
     interval_secs: u64,
-    iterations: u64,
+    iterations: Option<u64>,
 ) -> Result<()> {
     let state_path = state_path
         .map(PathBuf::from)
@@ -519,7 +523,8 @@ fn run_watch(
     let mut timeline = load_graph_timeline(&timeline_path)?;
 
     println!("Watching application...");
-    for index in 0..iterations {
+    let mut index = 0_u64;
+    loop {
         let current = capture_snapshot(repo_path)?;
         let report = compute_system_diff(previous.as_ref(), &current);
         println!("{}", render_report(&report));
@@ -558,9 +563,13 @@ fn run_watch(
             },
         )?;
         previous = Some(current);
-        if index + 1 < iterations {
-            thread::sleep(Duration::from_secs(interval_secs));
+        index += 1;
+        if let Some(max_iterations) = iterations {
+            if index >= max_iterations {
+                break;
+            }
         }
+        thread::sleep(Duration::from_secs(interval_secs));
     }
 
     Ok(())

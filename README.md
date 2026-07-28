@@ -141,7 +141,7 @@ Starts a local mock API server at `localhost:4000` from inferred entity/API shap
 ### Development Intelligence / Architecture Watching
 
 ```bash
-treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
+treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
 ```
 
 Runs repository observation and emits System Diff output each iteration.
@@ -152,16 +152,19 @@ Defaults:
 - interval: `2s`
 - iterations: `1`
 
+Use `--continuous` to keep running until you stop it (Ctrl+C).
+
 Example:
 
 ```bash
 treehouse connect ./my-app --iterations 5 --interval 3
+treehouse connect . --interval 2 --continuous
 ```
 
 ### Real-Time Watch Agent
 
 ```bash
-treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
+treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
 ```
 
 Runs the same snapshot/diff loop as `connect`, plus architecture-change events containing drift findings and remediation recommendations.
@@ -170,6 +173,70 @@ Additional live artifacts written under `.treehouse/`:
 - `subsystem-contracts.json` (generated subsystem contract map)
 - `system-graph-timeline.json` (time-series architecture history)
 - `evidence/` (append-only unified evidence graph)
+
+Desktop repo continuous loop:
+
+```bash
+cargo run -p treehouse-mock --bin treehouse -- watch . --interval 2 --continuous
+```
+
+Desktop app + observer in separate terminals:
+
+```bash
+# terminal 1
+cargo run -p treehouse-app
+
+# terminal 2
+cargo run -p treehouse-mock --bin treehouse -- watch . --interval 2 --continuous
+```
+
+Monitor multiple desktop repos at once:
+
+```bash
+scripts/monitor-repos.sh --interval 3 ~/Desktop/repo-a ~/Desktop/repo-b
+```
+
+For each watched repo, monitor output is written inside that repo at `.treehouse/monitors/<repo-name>.log`.
+
+Optional one-shot mode (run N snapshots per repo and exit):
+
+```bash
+scripts/monitor-repos.sh --interval 2 --iterations 1 ~/Desktop/repo-a ~/Desktop/repo-b
+```
+
+Cold start watched locations (initialize state/artifacts before continuous monitoring):
+
+```bash
+scripts/cold-start-repos.sh ~/Desktop/repo-a ~/Desktop/repo-b
+```
+
+Cold start + auto-discover Desktop repos + handoff into continuous monitoring:
+
+```bash
+scripts/cold-start-repos.sh --desktop-all --desktop-max 5 --start-monitor --monitor-interval 3
+```
+
+Optional baseline scan during cold start:
+
+```bash
+scripts/cold-start-repos.sh --baseline-scan ~/Desktop/repo-a
+```
+
+Cold-start outputs per watched repo:
+- `.treehouse/development-state.json`
+- `.treehouse/system-diff.json`
+- `.treehouse/system-graph-timeline.json`
+- `.treehouse/subsystem-contracts.json`
+- `.treehouse/monitors/<repo-name>-cold-start.log`
+
+### GitHub Repo Automation
+
+This repository includes GitHub Actions workflows under `.github/workflows/` that:
+
+- run formatting/check/test gates on each push and pull request
+- run a Treehouse watch snapshot and upload `.treehouse` artifacts for each run
+
+Once you push to GitHub, open the **Actions** tab to see continuous run output and download the generated report artifacts.
 
 ### Target-Driven Scan
 
@@ -234,6 +301,7 @@ Implemented UX includes:
 - Multi-pane layout with left navigation tree, center content views, right inspector, and bottom utility panel
 - Graph + intelligence panel with confidence filtering
 - Search, JSONPath, stats, and live System Diff result panes
+- Live System Diff target selection: add repository paths, auto-discover Desktop repos, and connect to a selected target feed
 - Diff mode (open base file and compare)
 - Bookmarks and recent files
 - Command palette actions with categories and descriptions

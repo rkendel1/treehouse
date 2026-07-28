@@ -42,6 +42,7 @@ fn main() -> eframe::Result<()> {
 struct PersistedState {
     recent_files: Vec<String>,
     bookmarks: Vec<String>,
+    monitor_targets: Vec<String>,
     workspace_layouts: BTreeMap<String, PersistedLayout>,
 }
 
@@ -120,6 +121,9 @@ struct TreehouseApp {
     live_system_diff_path: Option<PathBuf>,
     live_system_diff_workspace: Option<PathBuf>,
     live_system_diff_filter: String,
+    monitor_targets: Vec<PathBuf>,
+    monitor_target_input: String,
+    selected_monitor_target: Option<usize>,
     live_system_diff_mtime_unix: Option<u64>,
     scan_repo_path: String,
     scan_target_path: String,
@@ -163,6 +167,7 @@ impl TreehouseApp {
         if let Some(state) = load_persisted_state() {
             app.recent_files = state.recent_files.into_iter().map(PathBuf::from).collect();
             app.bookmarks = state.bookmarks;
+            app.monitor_targets = state.monitor_targets.into_iter().map(PathBuf::from).collect();
             app.workspace_layouts = state.workspace_layouts;
             if let Some(layout) = app.workspace_layouts.get("default").cloned() {
                 app.apply_layout(layout);
@@ -352,9 +357,82 @@ impl TreehouseApp {
                 .map(|p| p.display().to_string())
                 .collect(),
             bookmarks: self.bookmarks.clone(),
+            monitor_targets: self
+                .monitor_targets
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
             workspace_layouts,
         };
         save_persisted_state(&state);
+    }
+
+    fn add_monitor_target(&mut self, path: PathBuf) {
+        if !path.exists() {
+            self.error = Some(format!("Target does not exist: {}", path.display()));
+            return;
+        }
+        let normalized = if path.is_absolute() {
+            path
+        } else if let Ok(cwd) = env::current_dir() {
+            cwd.join(path)
+        } else {
+            path
+        };
+        if !self.monitor_targets.iter().any(|existing| existing == &normalized) {
+            self.monitor_targets.push(normalized);
+            self.selected_monitor_target = Some(self.monitor_targets.len().saturating_sub(1));
+            self.save_state();
+        }
+    }
+
+    fn connect_selected_monitor_target(&mut self, set_error_if_missing: bool) -> bool {
+        let Some(index) = self.selected_monitor_target else {
+            if set_error_if_missing {
+                self.error = Some("Select a monitor target first.".to_string());
+            }
+            return false;
+        };
+        let Some(workspace) = self.monitor_targets.get(index).cloned() else {
+            if set_error_if_missing {
+                self.error = Some("Selected monitor target is invalid.".to_string());
+            }
+            return false;
+        };
+
+        let path = workspace.join(".treehouse/system-diff.json");
+        if !path.is_file() {
+            if set_error_if_missing {
+                self.error = Some(format!(
+                    "Could not find {}. Run `treehouse watch {}` first.",
+                    path.display(),
+                    workspace.display()
+                ));
+            }
+            return false;
+        }
+
+        self.live_system_diff_path = Some(path);
+        self.live_system_diff_workspace = Some(workspace);
+        self.refresh_system_diff(true);
+        true
+    }
+
+    fn discover_desktop_targets(&mut self) {
+        let discovered = discover_desktop_git_repos();
+        let mut added = 0usize;
+        for repo in discovered {
+            if !self.monitor_targets.iter().any(|existing| existing == &repo) {
+                self.monitor_targets.push(repo);
+                added += 1;
+            }
+        }
+        if self.selected_monitor_target.is_none() && !self.monitor_targets.is_empty() {
+            self.selected_monitor_target = Some(0);
+        }
+        if added > 0 {
+            self.save_state();
+        }
     }
 
     fn load_workspace_layout_for_path(&mut self, path: &Path) {
@@ -800,6 +878,61 @@ impl TreehouseApp {
             }
         });
 
+        ui.separator();
+        ui.label("Monitor targets");
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.monitor_target_input)
+                    .hint_text("/path/to/repository"),
+            );
+            if ui.button("Browse").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    self.monitor_target_input = path.display().to_string();
+                }
+            }
+            if ui.button("Add Target").clicked() {
+                let trimmed = self.monitor_target_input.trim();
+                if trimmed.is_empty() {
+                    self.error = Some("Enter a repository path to add.".to_string());
+                } else {
+                    self.add_monitor_target(PathBuf::from(trimmed));
+                }
+            }
+            if ui.button("Discover Desktop").clicked() {
+                self.discover_desktop_targets();
+            }
+            if ui.button("Connect Selected").clicked() {
+                self.connect_selected_monitor_target(true);
+            }
+        });
+
+        let mut remove_target: Option<usize> = None;
+        egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+            if self.monitor_targets.is_empty() {
+                ui.label("No monitor targets saved.");
+            }
+            for (idx, path) in self.monitor_targets.iter().enumerate() {
+                let selected = self.selected_monitor_target == Some(idx);
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(selected, path.display().to_string()).clicked() {
+                        self.selected_monitor_target = Some(idx);
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        remove_target = Some(idx);
+                    }
+                });
+            }
+        });
+        if let Some(idx) = remove_target {
+            self.monitor_targets.remove(idx);
+            self.selected_monitor_target = match self.selected_monitor_target {
+                Some(sel) if sel == idx => None,
+                Some(sel) if sel > idx => Some(sel - 1),
+                other => other,
+            };
+            self.save_state();
+        }
+
         ui.horizontal(|ui| {
             ui.label("Filter:");
             ui.add(
@@ -902,6 +1035,11 @@ impl TreehouseApp {
     }
 
     fn try_connect_system_diff(&mut self, set_error_if_missing: bool) {
+        if self.selected_monitor_target.is_some() {
+            if self.connect_selected_monitor_target(set_error_if_missing) {
+                return;
+            }
+        }
         let Some((path, workspace)) = discover_system_diff_path(self.current_file.as_deref())
         else {
             if set_error_if_missing {
@@ -1593,6 +1731,49 @@ fn discover_system_diff_path(current_file: Option<&Path>) -> Option<(PathBuf, Pa
         }
     }
     None
+}
+
+fn discover_desktop_git_repos() -> Vec<PathBuf> {
+    let mut repos = Vec::new();
+    let desktop = match dirs::home_dir() {
+        Some(home) => home.join("Desktop"),
+        None => return repos,
+    };
+    if !desktop.is_dir() {
+        return repos;
+    }
+
+    if desktop.join(".git").is_dir() {
+        repos.push(desktop.clone());
+    }
+
+    let mut level_one = Vec::new();
+    if let Ok(entries) = fs::read_dir(&desktop) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.join(".git").is_dir() {
+                    repos.push(path.clone());
+                }
+                level_one.push(path);
+            }
+        }
+    }
+
+    for parent in level_one {
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() && path.join(".git").is_dir() {
+                    repos.push(path);
+                }
+            }
+        }
+    }
+
+    repos.sort();
+    repos.dedup();
+    repos
 }
 
 fn parse_changed_file_path(changed: &str) -> Option<&str> {
