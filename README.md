@@ -164,6 +164,10 @@ treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--
 
 Runs the same snapshot/diff loop as `connect`, plus architecture-change events containing drift findings and remediation recommendations.
 
+Additional live artifacts written under `.treehouse/`:
+- `subsystem-contracts.json` (generated subsystem contract map)
+- `system-graph-timeline.json` (time-series architecture history)
+
 ---
 
 ## Desktop App
