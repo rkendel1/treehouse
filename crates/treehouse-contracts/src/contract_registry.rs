@@ -6,7 +6,8 @@ use crate::{
     contract_definition::{ConsumerDependency, SubsystemContract},
     contract_migration::{build_migration_plan, ContractMigrationPlan},
     contract_observer::{
-        detect_subsystem_contract_drift, ContractDriftReport, ObservedContractReality,
+        detect_subsystem_contract_drift, ContractDriftKind, ContractDriftReport,
+        ObservedContractReality,
     },
 };
 
@@ -134,10 +135,15 @@ fn is_breaking_change(
 
     drift_report.drifts.iter().any(|drift| {
         drift.expected != drift.actual
-            && (drift.message.contains("removed field")
-                || drift.message.contains("missing endpoint")
-                || drift.message.contains("missing event")
-                || drift.message.contains("type"))
+            && matches!(
+                drift.kind,
+                ContractDriftKind::Data
+                    | ContractDriftKind::Api
+                    | ContractDriftKind::Event
+                    | ContractDriftKind::Process
+                    | ContractDriftKind::Ownership
+                    | ContractDriftKind::Guarantee
+            )
     })
 }
 

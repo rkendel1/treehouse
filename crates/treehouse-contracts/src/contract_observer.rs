@@ -461,7 +461,7 @@ fn impacted_consumers(
 }
 
 fn normalize_key(value: &str) -> String {
-    let mut normalized = String::with_capacity(value.len());
+    let mut normalized = String::with_capacity(value.len() + 1);
     let mut previous_was_sep = false;
 
     for ch in value.chars() {
@@ -474,7 +474,14 @@ fn normalize_key(value: &str) -> String {
         }
     }
 
-    normalized.trim_matches('.').to_string()
+    if normalized.starts_with('.') {
+        normalized.remove(0);
+    }
+    if normalized.ends_with('.') {
+        normalized.pop();
+    }
+
+    normalized
 }
 
 fn has_token_overlap(left: &str, right: &str) -> bool {
