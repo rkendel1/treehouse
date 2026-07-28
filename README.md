@@ -332,6 +332,7 @@ treehouse/
 │   ├── treehouse-migration/
 │   ├── treehouse-mock/
 │   ├── treehouse-model-inference/
+│   ├── treehouse-observer/
 │   ├── treehouse-parser/
 │   ├── treehouse-postgres/
 │   ├── treehouse-process/
@@ -484,12 +485,21 @@ Structural comparison engine.
 - Contract validation helpers for required fields
 - Compatibility/drift checks for schema changes
 
+### treehouse-observer
+
+- Development intelligence observer for repository evolution
+- Captures snapshots from git, structured sources, migrations, tests, runtime evidence, and database signals
+- Computes a System Diff: new capabilities, relationship changes, potential impact, and architecture drift alerts
+
 ### treehouse-mock
 
 - Mock API runtime generated from structured model files
 - `treehouse mock <model-file>` and `treehouse-mock <model-file>`
 - `treehouse analyze <structured files...>`
 - `treehouse compile --target <postgres|convex> <structured files...>`
+- `treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]`
+  - Continuously observes git changes, code symbol/AST-level deltas, migrations, API surface changes, tests, runtime event files, and database signals
+  - Produces a persisted **System Diff** artifact summarizing new capabilities, relationships, potential breakage, and architecture drift
 
 ### treehouse-stats
 
@@ -591,6 +601,7 @@ Features:
 - Adds process graph reconstruction for workflow states and transitions
 - Adds business-facing outputs: experiences, permissions, and integrations in the application model
 - Adds system digital twin impact analysis and migration planning foundations
+- Adds `treehouse connect` development intelligence mode for live repo observation and System Diff generation
 
 ---
 

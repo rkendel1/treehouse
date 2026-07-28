@@ -1,6 +1,8 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -9,6 +11,10 @@ use treehouse_convex::compile_convex;
 use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_mock::run_mock_server;
 use treehouse_model_inference::infer_application_model;
+use treehouse_observer::{
+    capture_snapshot, compute_system_diff, load_state, render_report, save_report, save_state,
+    SnapshotState,
+};
 use treehouse_parser::parse_structured_file;
 use treehouse_postgres::compile_postgres;
 
@@ -90,6 +96,52 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        "connect" => {
+            let Some(repo_path) = args.next() else {
+                bail!(
+                    "usage: treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
+                );
+            };
+            let mut state_path = None;
+            let mut report_path = None;
+            let mut interval_secs = 2_u64;
+            let mut iterations = 1_u64;
+
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--state" => state_path = args.next().map(PathBuf::from),
+                    "--report" => report_path = args.next().map(PathBuf::from),
+                    "--interval" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| anyhow!("missing value for --interval"))?;
+                        interval_secs = raw
+                            .parse::<u64>()
+                            .with_context(|| format!("invalid --interval value: {raw}"))?;
+                    }
+                    "--iterations" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| anyhow!("missing value for --iterations"))?;
+                        iterations = raw
+                            .parse::<u64>()
+                            .with_context(|| format!("invalid --iterations value: {raw}"))?;
+                    }
+                    _ => bail!("unknown connect argument `{arg}`"),
+                }
+            }
+
+            if iterations == 0 {
+                bail!("--iterations must be at least 1");
+            }
+            run_connect(
+                Path::new(&repo_path),
+                state_path.as_deref(),
+                report_path.as_deref(),
+                interval_secs,
+                iterations,
+            )
+        }
         _ => bail!("unknown command `{command}`.\n{}", usage()),
     }
 }
@@ -98,7 +150,8 @@ fn usage() -> &'static str {
     "usage:
   treehouse mock <model-file>
   treehouse analyze <structured files...>
-  treehouse compile --target <postgres|convex> [--output dir] <structured files...>"
+  treehouse compile --target <postgres|convex> [--output dir] <structured files...>
+  treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
 }
 
 fn analyze_inputs(paths: &[PathBuf]) -> Result<ApplicationModel> {
@@ -176,6 +229,43 @@ fn write_model(base_dir: &Path, model: &ApplicationModel) -> Result<()> {
         .with_context(|| format!("failed to write {}", model_path.display()))
 }
 
+fn run_connect(
+    repo_path: &Path,
+    state_path: Option<&Path>,
+    report_path: Option<&Path>,
+    interval_secs: u64,
+    iterations: u64,
+) -> Result<()> {
+    let state_path = state_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_path.join(".treehouse/development-state.json"));
+    let report_path = report_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_path.join(".treehouse/system-diff.json"));
+
+    let existing = load_state(&state_path)?;
+    let mut previous = existing.as_ref().map(|state| state.snapshot.clone());
+
+    for index in 0..iterations {
+        let current = capture_snapshot(repo_path)?;
+        let report = compute_system_diff(previous.as_ref(), &current);
+        println!("{}", render_report(&report));
+        save_report(&report_path, &report)?;
+        save_state(
+            &state_path,
+            &SnapshotState {
+                snapshot: current.clone(),
+            },
+        )?;
+        previous = Some(current);
+        if index + 1 < iterations {
+            thread::sleep(Duration::from_secs(interval_secs));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +300,32 @@ mod tests {
         .unwrap();
         let written = fs::read_to_string(temp_dir.join("migrations/001.sql")).unwrap();
         assert_eq!(written, "SELECT 1;");
+    }
+
+    #[test]
+    fn connect_writes_state_and_report() {
+        let temp_dir = std::env::temp_dir().join("treehouse-cli-connect-test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(temp_dir.join("migrations")).unwrap();
+        fs::write(
+            temp_dir.join("customers.json"),
+            r#"[{"id":"c1","email":"alice@example.com"}]"#,
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.join("migrations/001_create_invoices.sql"),
+            "CREATE TABLE invoices (id UUID, customer_id UUID, amount DECIMAL);",
+        )
+        .unwrap();
+        fs::write(temp_dir.join("events.log"), "event: invoice.created").unwrap();
+
+        let state = temp_dir.join(".treehouse/state.json");
+        let report = temp_dir.join(".treehouse/report.json");
+        run_connect(&temp_dir, Some(&state), Some(&report), 1, 1).unwrap();
+
+        assert!(state.exists());
+        assert!(report.exists());
+        let report_content = fs::read_to_string(report).unwrap();
+        assert!(report_content.contains("new_capabilities"));
     }
 }
