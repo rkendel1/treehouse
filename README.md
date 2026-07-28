@@ -229,6 +229,25 @@ Cold-start outputs per watched repo:
 - `.treehouse/subsystem-contracts.json`
 - `.treehouse/monitors/<repo-name>-cold-start.log`
 
+Run project projections and API gateway from analyzed repo state:
+
+```bash
+# generate postgres + convex projections from cold-start/baseline artifacts
+scripts/launch-projection.sh ~/Desktop/repo-a --mode all
+
+# only postgres projection
+scripts/launch-projection.sh ~/Desktop/repo-a --mode postgres
+
+# run API gateway projection (mock runtime) from inferred model
+scripts/launch-projection.sh ~/Desktop/repo-a --mode gateway
+```
+
+Direct CLI projection command from an artifact model:
+
+```bash
+treehouse project <application-model.json> --target <postgres|convex|gateway|all> [--output dir]
+```
+
 ### GitHub Repo Automation
 
 This repository includes GitHub Actions workflows under `.github/workflows/` that:
@@ -302,6 +321,7 @@ Implemented UX includes:
 - Graph + intelligence panel with confidence filtering
 - Search, JSONPath, stats, and live System Diff result panes
 - Live System Diff target selection: add repository paths, auto-discover Desktop repos, and connect to a selected target feed
+- In-app cold start for selected monitor target: one-click generation of initial `.treehouse` artifacts (optional baseline scan)
 - Diff mode (open base file and compare)
 - Bookmarks and recent files
 - Command palette actions with categories and descriptions

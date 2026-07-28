@@ -105,6 +105,105 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        "project" => {
+            let Some(model_path) = args.next() else {
+                bail!(
+                    "usage: treehouse project <application-model.json> --target <postgres|convex|gateway|all> [--output dir]"
+                );
+            };
+
+            let mut target = None;
+            let mut output_dir = None;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--target" => target = args.next(),
+                    "--output" => output_dir = args.next().map(PathBuf::from),
+                    _ => bail!("unknown project argument `{arg}`"),
+                }
+            }
+
+            let target = target.ok_or_else(|| {
+                anyhow!("missing --target <postgres|convex|gateway|all> argument")
+            })?;
+            let model_path = PathBuf::from(model_path);
+            let model = load_application_model(&model_path)?;
+
+            match target.as_str() {
+                "postgres" => {
+                    let base_dir = output_dir
+                        .unwrap_or_else(|| PathBuf::from(".treehouse/projection/postgres"));
+                    let artifacts = compile_postgres(&model);
+                    write_artifacts(
+                        &base_dir,
+                        artifacts
+                            .files
+                            .into_iter()
+                            .map(|file| (file.relative_path, file.content)),
+                    )?;
+                    write_model(&base_dir, &model)?;
+                    println!("Generated PostgreSQL projection in {}", base_dir.display());
+                }
+                "convex" => {
+                    let base_dir =
+                        output_dir.unwrap_or_else(|| PathBuf::from(".treehouse/projection/convex"));
+                    let artifacts = compile_convex(&model);
+                    write_artifacts(
+                        &base_dir,
+                        artifacts
+                            .files
+                            .into_iter()
+                            .map(|file| (file.relative_path, file.content)),
+                    )?;
+                    write_model(&base_dir, &model)?;
+                    println!("Generated Convex projection in {}", base_dir.display());
+                }
+                "gateway" => {
+                    println!(
+                        "Starting API gateway projection from {}",
+                        model_path.display()
+                    );
+                    return run_mock_server(&model_path);
+                }
+                "all" => {
+                    let base_dir =
+                        output_dir.unwrap_or_else(|| PathBuf::from(".treehouse/projection"));
+                    let postgres_dir = base_dir.join("postgres");
+                    let convex_dir = base_dir.join("convex");
+
+                    let postgres_artifacts = compile_postgres(&model);
+                    write_artifacts(
+                        &postgres_dir,
+                        postgres_artifacts
+                            .files
+                            .into_iter()
+                            .map(|file| (file.relative_path, file.content)),
+                    )?;
+                    write_model(&postgres_dir, &model)?;
+
+                    let convex_artifacts = compile_convex(&model);
+                    write_artifacts(
+                        &convex_dir,
+                        convex_artifacts
+                            .files
+                            .into_iter()
+                            .map(|file| (file.relative_path, file.content)),
+                    )?;
+                    write_model(&convex_dir, &model)?;
+
+                    println!("Generated projections in {}", base_dir.display());
+                    println!(
+                        "To run API gateway projection: treehouse project {} --target gateway",
+                        model_path.display()
+                    );
+                }
+                _ => {
+                    bail!(
+                        "unknown project target `{target}`. expected postgres, convex, gateway, or all"
+                    )
+                }
+            }
+            Ok(())
+        }
         "connect" => {
             let Some(repo_path) = args.next() else {
                 bail!(
@@ -357,6 +456,7 @@ fn usage() -> &'static str {
   treehouse mock <model-file>
   treehouse analyze <structured files...>
   treehouse compile --target <postgres|convex> [--output dir] <structured files...>
+    treehouse project <application-model.json> --target <postgres|convex|gateway|all> [--output dir]
     treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
     treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n] [--continuous]
   treehouse scan <repo-path> --target <path|name> [--local-llm [heuristic|ollama:<model>]] [--output dir] [--baseline-only] [--goals-only] [--format json|markdown]
@@ -431,6 +531,13 @@ fn analyze_inputs(paths: &[PathBuf]) -> Result<ApplicationModel> {
         .collect();
     let graph = UniversalDataGraph::build(&sources);
     Ok(infer_application_model(&graph, None))
+}
+
+fn load_application_model(path: &Path) -> Result<ApplicationModel> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read model file {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse application model {}", path.display()))
 }
 
 fn print_analysis(model: &ApplicationModel) {

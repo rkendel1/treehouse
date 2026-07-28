@@ -1,7 +1,9 @@
 use std::{
     collections::BTreeMap,
     env, fs,
+    io::Write,
     path::{Path, PathBuf},
+    process::Command,
     time::UNIX_EPOCH,
 };
 
@@ -124,6 +126,8 @@ struct TreehouseApp {
     monitor_targets: Vec<PathBuf>,
     monitor_target_input: String,
     selected_monitor_target: Option<usize>,
+    cold_start_include_baseline_scan: bool,
+    cold_start_status: Option<String>,
     live_system_diff_mtime_unix: Option<u64>,
     scan_repo_path: String,
     scan_target_path: String,
@@ -433,6 +437,144 @@ impl TreehouseApp {
         if added > 0 {
             self.save_state();
         }
+    }
+
+    fn run_cold_start_for_selected_target(&mut self) {
+        let Some(index) = self.selected_monitor_target else {
+            self.error = Some("Select a monitor target first.".to_string());
+            return;
+        };
+        let Some(repo) = self.monitor_targets.get(index).cloned() else {
+            self.error = Some("Selected monitor target is invalid.".to_string());
+            return;
+        };
+        if !repo.join(".git").is_dir() {
+            self.error = Some(format!("Not a git repository: {}", repo.display()));
+            return;
+        }
+
+        let treehouse_dir = repo.join(".treehouse");
+        let monitor_dir = treehouse_dir.join("monitors");
+        if let Err(err) = fs::create_dir_all(&monitor_dir) {
+            self.error = Some(format!(
+                "Failed creating monitor directory {}: {err}",
+                monitor_dir.display()
+            ));
+            return;
+        }
+
+        let repo_name = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("repo");
+        let log_path = monitor_dir.join(format!("{repo_name}-cold-start.log"));
+
+        self.cold_start_status = Some(format!("Cold starting {}...", repo.display()));
+
+        let watch_result = Command::new("cargo")
+            .args([
+                "run",
+                "-p",
+                "treehouse-mock",
+                "--bin",
+                "treehouse",
+                "--",
+                "watch",
+            ])
+            .arg(&repo)
+            .args(["--interval", "1", "--iterations", "1"])
+            .output();
+
+        let watch_output = match watch_result {
+            Ok(output) => output,
+            Err(err) => {
+                self.error = Some(format!("Failed to run cold start watch: {err}"));
+                return;
+            }
+        };
+
+        if let Ok(mut log_file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = writeln!(
+                log_file,
+                "== Cold start watch for {} ==",
+                repo.display()
+            );
+            let _ = log_file.write_all(&watch_output.stdout);
+            let _ = log_file.write_all(&watch_output.stderr);
+        }
+
+        if !watch_output.status.success() {
+            let stderr = String::from_utf8_lossy(&watch_output.stderr);
+            self.error = Some(format!(
+                "Cold start watch failed for {}: {}",
+                repo.display(),
+                stderr.trim()
+            ));
+            return;
+        }
+
+        if self.cold_start_include_baseline_scan {
+            let scan_output_dir = treehouse_dir.join("bootstrap/scan");
+            let scan_result = Command::new("cargo")
+                .args([
+                    "run",
+                    "-p",
+                    "treehouse-mock",
+                    "--bin",
+                    "treehouse",
+                    "--",
+                    "scan",
+                ])
+                .arg(&repo)
+                .args(["--baseline-only", "--output"])
+                .arg(&scan_output_dir)
+                .args(["--format", "json"])
+                .output();
+
+            let scan_output = match scan_result {
+                Ok(output) => output,
+                Err(err) => {
+                    self.error = Some(format!("Failed to run baseline scan: {err}"));
+                    return;
+                }
+            };
+
+            if let Ok(mut log_file) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                let _ = writeln!(
+                    log_file,
+                    "== Baseline scan for {} ==",
+                    repo.display()
+                );
+                let _ = log_file.write_all(&scan_output.stdout);
+                let _ = log_file.write_all(&scan_output.stderr);
+            }
+
+            if !scan_output.status.success() {
+                let stderr = String::from_utf8_lossy(&scan_output.stderr);
+                self.error = Some(format!(
+                    "Baseline scan failed for {}: {}",
+                    repo.display(),
+                    stderr.trim()
+                ));
+                return;
+            }
+        }
+
+        self.connect_selected_monitor_target(false);
+        self.cold_start_status = Some(format!(
+            "Cold start complete for {}. Artifacts in {}",
+            repo.display(),
+            treehouse_dir.display()
+        ));
+        self.error = None;
     }
 
     fn load_workspace_layout_for_path(&mut self, path: &Path) {
@@ -903,6 +1045,19 @@ impl TreehouseApp {
             }
             if ui.button("Connect Selected").clicked() {
                 self.connect_selected_monitor_target(true);
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(
+                &mut self.cold_start_include_baseline_scan,
+                "Include baseline scan",
+            );
+            if ui.button("Cold Start Selected").clicked() {
+                self.run_cold_start_for_selected_target();
+            }
+            if let Some(status) = &self.cold_start_status {
+                ui.label(status);
             }
         });
 

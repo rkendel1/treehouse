@@ -144,15 +144,15 @@ for repo in "${repos[@]}"; do
 
   bootstrap_log="$monitor_dir/${name}-cold-start.log"
   echo "[$name] Bootstrapping watch artifacts..."
-  cargo run -p treehouse-mock --bin treehouse -- \
+  cargo run -q -p treehouse-mock --bin treehouse -- \
     watch "$repo" \
     --interval "$bootstrap_interval" \
     --iterations "$bootstrap_iterations" \
-    2>&1 | tee "$bootstrap_log"
+    > "$bootstrap_log" 2>&1
 
   if [[ "$run_baseline_scan" == "true" ]]; then
     echo "[$name] Running baseline scan..."
-    cargo run -p treehouse-mock --bin treehouse -- \
+    cargo run -q -p treehouse-mock --bin treehouse -- \
       scan "$repo" \
       --baseline-only \
       --output "$bootstrap_dir/scan" \
