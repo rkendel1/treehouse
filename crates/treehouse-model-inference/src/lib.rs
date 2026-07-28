@@ -373,6 +373,10 @@ mod tests {
                 name: "openapi-orders.json",
                 document: &orders,
             },
+            GraphSource {
+                name: "orders-events.log",
+                document: &orders,
+            },
         ]);
 
         let model = infer_application_model(&graph, Some("Commerce System"));
