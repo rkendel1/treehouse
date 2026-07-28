@@ -4,6 +4,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use treehouse_core::Document;
+use treehouse_diff::{diff_documents, DiffEntry, DiffKind};
 use treehouse_graph::{GraphEdgeKind, GraphSource, UniversalDataGraph};
 use treehouse_parser::{parse_structured_file, DocumentFormat, ParsedDocument};
 use treehouse_query::{query_json_path, value_at_path, QueryMatch};
@@ -14,6 +15,7 @@ use treehouse_tree::{build_rows, TreeRow, TreeState};
 const MAX_RECENT_FILES: usize = 12;
 const TREE_ROW_HEIGHT: f32 = 22.0;
 const GRAPH_ROW_HEIGHT: f32 = 22.0;
+const DIFF_ROW_HEIGHT: f32 = 24.0;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -35,6 +37,10 @@ struct TreehouseApp {
     current_file: Option<PathBuf>,
     current_format: Option<DocumentFormat>,
     document: Option<Document>,
+    comparison_file: Option<PathBuf>,
+    comparison_format: Option<DocumentFormat>,
+    comparison_document: Option<Document>,
+    diff_entries: Vec<DiffEntry>,
     tree_state: TreeState,
     search_query: String,
     search_results: Vec<SearchMatch>,
@@ -56,6 +62,7 @@ enum ExplorerView {
     #[default]
     Tree,
     Graph,
+    Diff,
 }
 
 impl TreehouseApp {
@@ -72,7 +79,7 @@ impl TreehouseApp {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Structured",
-                &["json", "jsonl", "ndjson", "yaml", "yml", "toml"],
+                &["json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv"],
             )
             .pick_file()
         else {
@@ -108,6 +115,7 @@ impl TreehouseApp {
         self.current_format = Some(parsed.format);
         self.stats = Some(analyze(&parsed.document));
         self.document = Some(parsed.document);
+        self.refresh_diff();
         self.tree_state = TreeState::default();
         self.error = None;
         self.refresh_search();
@@ -130,6 +138,43 @@ impl TreehouseApp {
             .unwrap_or_default();
     }
 
+    fn open_compare_file_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Structured",
+                &["json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv"],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+
+        self.open_compare_file_path(path);
+    }
+
+    fn open_compare_file_path(&mut self, path: PathBuf) {
+        match parse_structured_file(&path) {
+            Ok(parsed) => {
+                self.comparison_file = Some(parsed.path.clone());
+                self.comparison_format = Some(parsed.format);
+                self.comparison_document = Some(parsed.document);
+                self.refresh_diff();
+                self.explorer_view = ExplorerView::Diff;
+                self.error = None;
+            }
+            Err(err) => {
+                self.error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn refresh_diff(&mut self) {
+        self.diff_entries = match (&self.document, &self.comparison_document) {
+            (Some(left), Some(right)) => diff_documents(left, right),
+            _ => Vec::new(),
+        };
+    }
+
     fn run_jsonpath_query(&mut self) {
         self.jsonpath_results = self
             .document
@@ -150,6 +195,7 @@ impl TreehouseApp {
     fn execute_palette_command(&mut self, command: PaletteCommand) {
         match command {
             PaletteCommand::OpenFile => self.open_file_dialog(),
+            PaletteCommand::CompareFile => self.open_compare_file_dialog(),
             PaletteCommand::AddBookmark => self.add_selected_bookmark(),
             PaletteCommand::ClearBookmarks => {
                 self.bookmarks.clear();
@@ -160,6 +206,12 @@ impl TreehouseApp {
                 self.save_state();
             }
             PaletteCommand::ClearSelection => self.tree_state.clear_selection(),
+            PaletteCommand::ClearComparison => {
+                self.comparison_file = None;
+                self.comparison_format = None;
+                self.comparison_document = None;
+                self.refresh_diff();
+            }
         }
         self.show_command_palette = false;
     }
@@ -227,6 +279,47 @@ impl TreehouseApp {
             {
                 *selected_entity = Some(profile.name.clone());
             }
+
+            fn draw_diff(&mut self, ui: &mut egui::Ui) {
+                ui.heading("Diff View");
+                if self.document.is_none() {
+                    ui.label("Open a base file first.");
+                    return;
+                }
+                if self.comparison_document.is_none() {
+                    ui.label("Choose a comparison file.");
+                    return;
+                }
+
+                if self.diff_entries.is_empty() {
+                    ui.label("No structural differences detected.");
+                    return;
+                }
+
+                egui::ScrollArea::vertical().show_rows(
+                    ui,
+                    DIFF_ROW_HEIGHT,
+                    self.diff_entries.len(),
+                    |ui, row_range| {
+                        for row_index in row_range {
+                            let entry = &self.diff_entries[row_index];
+                            ui.horizontal_wrapped(|ui| {
+                                let badge = match entry.kind {
+                                    DiffKind::Added => "+",
+                                    DiffKind::Removed => "-",
+                                    DiffKind::Changed => "~",
+                                    DiffKind::TypeChanged => "±",
+                                };
+                                if ui.button(entry.path.clone()).clicked() {
+                                    self.tree_state.select_path(entry.path.clone());
+                                    self.explorer_view = ExplorerView::Tree;
+                                }
+                                ui.label(format!("{badge} {}", diff_summary(entry)));
+                            });
+                        }
+                    },
+                );
+            }
         }
 
         ui.separator();
@@ -293,6 +386,9 @@ impl eframe::App for TreehouseApp {
                 if ui.button("Open File").clicked() {
                     self.open_file_dialog();
                 }
+                if ui.button("Compare File").clicked() {
+                    self.open_compare_file_dialog();
+                }
 
                 if ui.button("Command Palette").clicked() {
                     self.show_command_palette = true;
@@ -305,11 +401,19 @@ impl eframe::App for TreehouseApp {
                 ui.separator();
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Tree, "Tree View");
                 ui.selectable_value(&mut self.explorer_view, ExplorerView::Graph, "Graph View");
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Diff, "Diff View");
 
                 if let Some(path) = &self.current_file {
                     ui.separator();
                     ui.label(path.display().to_string());
                     if let Some(format) = self.current_format {
+                        ui.small(format!("({format:?})"));
+                    }
+                }
+                if let Some(path) = &self.comparison_file {
+                    ui.separator();
+                    ui.label(format!("↔ {}", path.display()));
+                    if let Some(format) = self.comparison_format {
                         ui.small(format!("({format:?})"));
                     }
                 }
@@ -385,6 +489,21 @@ impl eframe::App for TreehouseApp {
                 }
                 if let Some(path) = open_recent {
                     self.open_file_path(path);
+                }
+
+                ui.separator();
+                ui.heading("Comparison");
+                if let Some(path) = &self.comparison_file {
+                    ui.label(path.display().to_string());
+                    ui.label(format!("Differences: {}", self.diff_entries.len()));
+                    if ui.small_button("Clear comparison").clicked() {
+                        self.comparison_file = None;
+                        self.comparison_format = None;
+                        self.comparison_document = None;
+                        self.refresh_diff();
+                    }
+                } else {
+                    ui.label("No comparison file selected.");
                 }
             });
 
@@ -606,7 +725,7 @@ impl eframe::App for TreehouseApp {
                     self.draw_tree(ui, &rows);
                 } else {
                     ui.centered_and_justified(|ui| {
-                        ui.heading("Open a JSON, YAML, or TOML file to start exploring");
+                        ui.heading("Open a structured file to start exploring");
                     });
                 }
             }
@@ -619,6 +738,7 @@ impl eframe::App for TreehouseApp {
                     });
                 }
             }
+            ExplorerView::Diff => self.draw_diff(ui),
         });
 
         if self.show_command_palette {
@@ -649,20 +769,24 @@ impl eframe::App for TreehouseApp {
 #[derive(Debug, Clone, Copy)]
 enum PaletteCommand {
     OpenFile,
+    CompareFile,
     AddBookmark,
     ClearBookmarks,
     ClearRecentFiles,
     ClearSelection,
+    ClearComparison,
 }
 
 impl PaletteCommand {
     fn label(self) -> &'static str {
         match self {
             PaletteCommand::OpenFile => "Open File",
+            PaletteCommand::CompareFile => "Compare File",
             PaletteCommand::AddBookmark => "Add Bookmark",
             PaletteCommand::ClearBookmarks => "Clear Bookmarks",
             PaletteCommand::ClearRecentFiles => "Clear Recent Files",
             PaletteCommand::ClearSelection => "Clear Selection",
+            PaletteCommand::ClearComparison => "Clear Comparison",
         }
     }
 }
@@ -670,10 +794,12 @@ impl PaletteCommand {
 fn filtered_commands(filter: &str) -> Vec<PaletteCommand> {
     let all = [
         PaletteCommand::OpenFile,
+        PaletteCommand::CompareFile,
         PaletteCommand::AddBookmark,
         PaletteCommand::ClearBookmarks,
         PaletteCommand::ClearRecentFiles,
         PaletteCommand::ClearSelection,
+        PaletteCommand::ClearComparison,
     ];
 
     let filter = filter.trim().to_lowercase();
@@ -694,6 +820,53 @@ fn summarize_for_results(value: &Value) -> String {
         Value::Number(v) => v.to_string(),
         Value::Bool(v) => v.to_string(),
         Value::Null => "null".to_string(),
+    }
+}
+
+fn diff_summary(entry: &DiffEntry) -> String {
+    match entry.kind {
+        DiffKind::Added => format!(
+            "added {}",
+            entry
+                .right
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string())
+        ),
+        DiffKind::Removed => format!(
+            "removed {}",
+            entry
+                .left
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string())
+        ),
+        DiffKind::Changed => {
+            let left = entry
+                .left
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            let right = entry
+                .right
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            format!("changed {left} → {right}")
+        }
+        DiffKind::TypeChanged => {
+            let left = entry
+                .left
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            let right = entry
+                .right
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            format!("type changed {left} → {right}")
+        }
     }
 }
 

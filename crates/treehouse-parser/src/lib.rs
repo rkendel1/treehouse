@@ -4,8 +4,11 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use csv::ReaderBuilder;
 use memmap2::Mmap;
+use quick_xml::de::from_str as parse_xml;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use treehouse_core::Document;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +17,8 @@ pub enum DocumentFormat {
     Jsonl,
     Yaml,
     Toml,
+    Xml,
+    Csv,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +35,8 @@ pub fn detect_format(path: &Path) -> Option<DocumentFormat> {
         "jsonl" | "ndjson" => Some(DocumentFormat::Jsonl),
         "yaml" | "yml" => Some(DocumentFormat::Yaml),
         "toml" => Some(DocumentFormat::Toml),
+        "xml" => Some(DocumentFormat::Xml),
+        "csv" => Some(DocumentFormat::Csv),
         _ => None,
     }
 }
@@ -61,6 +68,10 @@ pub fn parse_str_with_format(input: &str, format: DocumentFormat) -> Result<Docu
             serde_json::to_value(toml_value)
                 .context("failed to convert TOML to JSON representation")?
         }
+        DocumentFormat::Xml => {
+            parse_xml::<Value>(input).context("failed to parse XML into structured value")?
+        }
+        DocumentFormat::Csv => parse_csv(input)?,
     };
 
     Ok(Document::new(root, input.len()))
@@ -88,7 +99,11 @@ pub fn parse_structured_file(path: &Path) -> Result<ParsedDocument> {
             let root = serde_json::from_slice(&mmap).context("failed to parse JSON")?;
             Document::new(root, source_len)
         }
-        DocumentFormat::Jsonl | DocumentFormat::Yaml | DocumentFormat::Toml => {
+        DocumentFormat::Jsonl
+        | DocumentFormat::Yaml
+        | DocumentFormat::Toml
+        | DocumentFormat::Xml
+        | DocumentFormat::Csv => {
             let source = std::str::from_utf8(&mmap).with_context(|| {
                 format!(
                     "failed to read UTF-8 text for {} file: {}",
@@ -96,6 +111,8 @@ pub fn parse_structured_file(path: &Path) -> Result<ParsedDocument> {
                         DocumentFormat::Jsonl => "JSONL",
                         DocumentFormat::Yaml => "YAML",
                         DocumentFormat::Toml => "TOML",
+                        DocumentFormat::Xml => "XML",
+                        DocumentFormat::Csv => "CSV",
                         DocumentFormat::Json => "JSON",
                     },
                     path.display()
@@ -110,6 +127,33 @@ pub fn parse_structured_file(path: &Path) -> Result<ParsedDocument> {
         format,
         document,
     })
+}
+
+fn parse_csv(input: &str) -> Result<Value> {
+    let mut reader = ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .from_reader(input.as_bytes());
+    let headers = reader
+        .headers()
+        .context("failed to parse CSV headers")?
+        .clone();
+
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let record = record.context("failed to parse CSV record")?;
+        let mut object = Map::new();
+        for (index, value) in record.iter().enumerate() {
+            let key = headers
+                .get(index)
+                .filter(|header| !header.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| format!("column_{index}"));
+            object.insert(key, Value::String(value.to_string()));
+        }
+        rows.push(Value::Object(object));
+    }
+
+    Ok(Value::Array(rows))
 }
 
 #[cfg(test)]
@@ -136,7 +180,9 @@ mod tests {
             detect_format(Path::new("a.toml")),
             Some(DocumentFormat::Toml)
         );
-        assert_eq!(detect_format(Path::new("a.xml")), None);
+        assert_eq!(detect_format(Path::new("a.xml")), Some(DocumentFormat::Xml));
+        assert_eq!(detect_format(Path::new("a.csv")), Some(DocumentFormat::Csv));
+        assert_eq!(detect_format(Path::new("a.txt")), None);
     }
 
     #[test]
@@ -162,6 +208,17 @@ mod tests {
         let jsonl =
             parse_str_with_format("{\"id\":1}\n{\"id\":2}\n", DocumentFormat::Jsonl).unwrap();
         assert_eq!(jsonl.root_meta().child_count, 2);
+
+        let xml = parse_str_with_format(
+            "<root><users><item><id>1</id></item><item><id>2</id></item></users></root>",
+            DocumentFormat::Xml,
+        )
+        .unwrap();
+        assert_eq!(xml.root_meta().node_type, treehouse_core::NodeType::Object);
+
+        let csv =
+            parse_str_with_format("id,name\n1,Alice\n2,Bob\n", DocumentFormat::Csv).unwrap();
+        assert_eq!(csv.root_meta().child_count, 2);
     }
 
     #[test]

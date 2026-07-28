@@ -4,7 +4,7 @@ Explore structured data at any scale.
 
 A native, cross-platform structured data explorer built in Rust.
 
-Treehouse opens massive JSON, JSONL/NDJSON, YAML, and TOML files instantly using lazy parsing, memory mapping, and streaming indexes. XML and CSV are planned next. Instead of acting like another text editor, Treehouse understands the structure of your data and lets you explore it interactively.
+Treehouse opens massive JSON, JSONL/NDJSON, YAML, TOML, XML, and CSV files instantly using lazy parsing, memory mapping, and streaming indexes. Instead of acting like another text editor, Treehouse understands the structure of your data and lets you explore it interactively.
 
 The goal is to become TablePlus for structured documents.
 
@@ -57,11 +57,11 @@ Editing is secondary.
 - JSONL / NDJSON
 - YAML
 - TOML
+- XML
+- CSV
 
 ### Future
 
-- XML
-- CSV
 - MessagePack
 - BSON
 - CBOR
@@ -323,6 +323,7 @@ treehouse/
 │   ├── treehouse-app/
 │   ├── treehouse-ui/
 │   ├── treehouse-core/
+│   ├── treehouse-diff/
 │   ├── treehouse-tree/
 │   ├── treehouse-parser/
 │   ├── treehouse-graph/
@@ -470,6 +471,14 @@ Features:
 - Relationship detection
 - Graph explorer projection
 - Data intelligence panel
+
+## Milestone 4 — Cross-Format Diff
+
+- XML parser support
+- CSV parser support
+- Structural diff crate (`treehouse-diff`)
+- Compare-file workflow in app
+- Dedicated diff explorer view
 
 ---
 
