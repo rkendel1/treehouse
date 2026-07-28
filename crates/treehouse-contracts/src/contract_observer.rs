@@ -7,6 +7,8 @@ use crate::contract_definition::{
     SubsystemContract,
 };
 
+// Two shared tokens (e.g., `invoice` + `status`) are required to map a drift key
+// to a consumer dependency without requiring exact string matching.
 const MIN_TOKEN_OVERLAP: usize = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
