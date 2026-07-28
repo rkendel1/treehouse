@@ -1,9 +1,10 @@
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use treehouse_application_model::{
     pluralize, to_snake_case, ApiEndpoint, ApplicationInfo, ApplicationModel, Constraint,
-    CrudOperation, Entity, Field, GenerationMetadata, PermissionPolicy, Relationship,
-    RelationshipType, Workflow, WorkflowTransition,
+    CrudOperation, Entity, Experience, ExperienceScreen, Field, GenerationMetadata, Integration,
+    PermissionPolicy, Relationship, RelationshipType, Workflow, WorkflowTransition,
 };
 use treehouse_graph::{GraphEdgeKind, IdentityKind, UniversalDataGraph, ValueKind};
 
@@ -101,6 +102,8 @@ pub fn infer_application_model(
         })
         .collect();
     let api = infer_api_surface(&entities);
+    let experiences = infer_experiences(&entities);
+    let integrations = infer_integrations(graph);
 
     let source_count = graph
         .intelligence
@@ -118,6 +121,8 @@ pub fn infer_application_model(
         workflows,
         permissions,
         api,
+        experiences,
+        integrations,
         metadata: GenerationMetadata {
             generated_by: "treehouse-model-inference".to_string(),
             generated_at_unix: now_unix(),
@@ -203,15 +208,25 @@ fn infer_workflows(entities: &[Entity]) -> Vec<Workflow> {
         .map(|entity| Workflow {
             entity: entity.name.clone(),
             states: vec![
-                "pending".to_string(),
+                "created".to_string(),
                 "paid".to_string(),
-                "fulfilled".to_string(),
-                "cancelled".to_string(),
+                "shipped".to_string(),
+                "completed".to_string(),
             ],
-            transitions: vec![WorkflowTransition {
-                from: "pending".to_string(),
-                allowed: vec!["paid".to_string(), "cancelled".to_string()],
-            }],
+            transitions: vec![
+                WorkflowTransition {
+                    from: "created".to_string(),
+                    allowed: vec!["paid".to_string()],
+                },
+                WorkflowTransition {
+                    from: "paid".to_string(),
+                    allowed: vec!["shipped".to_string()],
+                },
+                WorkflowTransition {
+                    from: "shipped".to_string(),
+                    allowed: vec!["completed".to_string()],
+                },
+            ],
         })
         .collect()
 }
@@ -246,6 +261,74 @@ fn infer_api_surface(entities: &[Entity]) -> Vec<ApiEndpoint> {
         });
     }
     api
+}
+
+fn infer_experiences(entities: &[Entity]) -> Vec<Experience> {
+    let screens = entities
+        .iter()
+        .flat_map(|entity| {
+            let route = pluralize(&entity.name);
+            [
+                ExperienceScreen {
+                    name: format!("{} List", entity.name),
+                    route: format!("/{route}"),
+                    entities: vec![entity.name.clone()],
+                },
+                ExperienceScreen {
+                    name: format!("{} Detail", entity.name),
+                    route: format!("/{route}/:id"),
+                    entities: vec![entity.name.clone()],
+                },
+                ExperienceScreen {
+                    name: format!("Create {}", entity.name),
+                    route: format!("/{route}/new"),
+                    entities: vec![entity.name.clone()],
+                },
+            ]
+        })
+        .collect();
+
+    vec![Experience {
+        name: "Application Experience".to_string(),
+        screens,
+    }]
+}
+
+fn infer_integrations(graph: &UniversalDataGraph) -> Vec<Integration> {
+    let mut sources = BTreeSet::new();
+    for profile in &graph.intelligence {
+        for source in &profile.sources {
+            sources.insert(source.clone());
+        }
+    }
+
+    sources
+        .into_iter()
+        .filter_map(|source| {
+            let lower = source.to_ascii_lowercase();
+            if lower.contains("openapi")
+                || lower.contains("swagger")
+                || lower.contains("postman")
+                || lower.contains("api")
+            {
+                Some(Integration {
+                    name: "API Integration".to_string(),
+                    integration_type: "api".to_string(),
+                    target: source,
+                    confidence: 0.9,
+                })
+            } else if lower.contains("event") || lower.contains("audit") || lower.contains("log") {
+                Some(Integration {
+                    name: "Event Integration".to_string(),
+                    integration_type: "event_stream".to_string(),
+                    target: source,
+                    confidence: 0.8,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn now_unix() -> u64 {
@@ -286,6 +369,10 @@ mod tests {
                 name: "orders.json",
                 document: &orders,
             },
+            GraphSource {
+                name: "openapi-orders.json",
+                document: &orders,
+            },
         ]);
 
         let model = infer_application_model(&graph, Some("Commerce System"));
@@ -307,6 +394,15 @@ mod tests {
             .workflows
             .iter()
             .any(|workflow| workflow.entity == "Order"
-                && workflow.states.iter().any(|state| state == "pending")));
+                && workflow.states.iter().any(|state| state == "created")));
+        assert!(model
+            .experiences
+            .iter()
+            .flat_map(|experience| experience.screens.iter())
+            .any(|screen| screen.name == "Customer Detail"));
+        assert!(model
+            .integrations
+            .iter()
+            .any(|integration| integration.integration_type == "api"));
     }
 }

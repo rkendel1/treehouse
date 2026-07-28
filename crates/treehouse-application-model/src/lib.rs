@@ -100,6 +100,30 @@ pub struct PermissionPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExperienceScreen {
+    pub name: String,
+    pub route: String,
+    #[serde(default)]
+    pub entities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Experience {
+    pub name: String,
+    pub screens: Vec<ExperienceScreen>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Integration {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub integration_type: String,
+    pub target: String,
+    #[serde(default)]
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entity {
     pub name: String,
     pub confidence: f32,
@@ -123,6 +147,10 @@ pub struct ApplicationModel {
     pub workflows: Vec<Workflow>,
     pub permissions: Vec<PermissionPolicy>,
     pub api: Vec<ApiEndpoint>,
+    #[serde(default)]
+    pub experiences: Vec<Experience>,
+    #[serde(default)]
+    pub integrations: Vec<Integration>,
     pub metadata: GenerationMetadata,
 }
 
