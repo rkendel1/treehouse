@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use treehouse_evidence::{EvidenceKind, EvidenceSnapshot};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Subsystem {
@@ -59,6 +60,47 @@ pub fn latest_graph_version(timeline: &SystemGraphTimeline) -> Option<&SystemGra
     timeline.versions.last()
 }
 
+pub fn build_system_graph_from_evidence_snapshot(
+    version: u64,
+    snapshot: &EvidenceSnapshot,
+) -> SystemGraphVersion {
+    let mut by_subsystem = std::collections::BTreeMap::<String, Subsystem>::new();
+    for node in &snapshot.nodes {
+        let subsystem_name = node
+            .subsystem
+            .clone()
+            .unwrap_or_else(|| "Unassigned".to_string());
+        let subsystem = by_subsystem
+            .entry(subsystem_name.clone())
+            .or_insert_with(|| Subsystem {
+                id: subsystem_name.clone(),
+                ..Subsystem::default()
+            });
+        match &node.kind {
+            EvidenceKind::Entity { name } => subsystem.entities.push(name.clone()),
+            EvidenceKind::ApiSurface { method, path } => {
+                subsystem.apis.push(format!("{method} {path}"));
+            }
+            EvidenceKind::Workflow { name } => subsystem.workflows.push(name.clone()),
+            EvidenceKind::RuntimeEvent { event } => subsystem.events.push(event.clone()),
+            _ => {}
+        }
+        subsystem.confidence = subsystem.confidence.max(node.confidence.score);
+    }
+    let mut subsystems: Vec<Subsystem> = by_subsystem.into_values().collect();
+    for subsystem in &mut subsystems {
+        subsystem.entities.sort();
+        subsystem.entities.dedup();
+        subsystem.apis.sort();
+        subsystem.apis.dedup();
+        subsystem.workflows.sort();
+        subsystem.workflows.dedup();
+        subsystem.events.sort();
+        subsystem.events.dedup();
+    }
+    build_system_graph_version(version, subsystems, vec![])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +147,31 @@ mod tests {
         );
         assert_eq!(timeline.versions.len(), 2);
         assert_eq!(latest_graph_version(&timeline).unwrap().version, 3);
+    }
+
+    #[test]
+    fn builds_system_graph_from_evidence_snapshot() {
+        let snapshot = EvidenceSnapshot {
+            observed_through_unix: 10,
+            nodes: vec![treehouse_evidence::EvidenceNode::new(
+                treehouse_evidence::EvidenceKind::Entity {
+                    name: "Invoice".to_string(),
+                },
+                10,
+                treehouse_evidence::Confidence::new(0.9, None),
+                treehouse_evidence::Provenance::new(
+                    treehouse_evidence::SourceKind::Entity,
+                    "test",
+                    "test",
+                ),
+                Some("Billing".to_string()),
+                serde_json::Value::Null,
+            )],
+            edges: vec![],
+        };
+        let graph = build_system_graph_from_evidence_snapshot(1, &snapshot);
+        assert_eq!(graph.subsystems.len(), 1);
+        assert_eq!(graph.subsystems[0].id, "Billing");
+        assert_eq!(graph.subsystems[0].entities, vec!["Invoice".to_string()]);
     }
 }

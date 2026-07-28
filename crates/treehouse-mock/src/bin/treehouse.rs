@@ -10,18 +10,20 @@ use treehouse_agent::{detect_architecture_change_with_files, infer_subsystem_con
 use treehouse_application_model::ApplicationModel;
 use treehouse_convex::compile_convex;
 use treehouse_drift::OwnershipPolicy;
+use treehouse_evidence::EvidenceQuery;
 use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_mock::run_mock_server;
 use treehouse_model_inference::infer_application_model;
 use treehouse_observer::{
-    capture_snapshot, compute_system_diff, load_state, render_report, save_report, save_state,
-    SnapshotState,
+    append_snapshot_evidence, capture_snapshot, compute_system_diff, load_evidence_snapshot,
+    load_state, query_evidence, render_report, save_report, save_state, SnapshotState,
 };
 use treehouse_parser::parse_structured_file;
 use treehouse_postgres::compile_postgres;
 use treehouse_subsystem_engine::{discover_subsystems, SubsystemSignals};
 use treehouse_system_graph::{
-    append_graph_version, build_system_graph_version, SystemGraphTimeline,
+    append_graph_version, build_system_graph_from_evidence_snapshot, build_system_graph_version,
+    SystemGraphTimeline,
 };
 
 fn main() -> Result<()> {
@@ -194,6 +196,66 @@ fn main() -> Result<()> {
                 iterations,
             )
         }
+        "evidence" => {
+            let Some(action) = args.next() else {
+                bail!("usage: treehouse evidence <query|snapshot> ...");
+            };
+            match action.as_str() {
+                "query" => {
+                    let mut repo = None;
+                    let mut kind = None;
+                    let mut subsystem = None;
+                    let mut since = None;
+                    while let Some(arg) = args.next() {
+                        match arg.as_str() {
+                            "--repo" => repo = args.next().map(PathBuf::from),
+                            "--kind" => kind = args.next(),
+                            "--subsystem" => subsystem = args.next(),
+                            "--since" => since = args.next(),
+                            _ => bail!("unknown evidence query argument `{arg}`"),
+                        }
+                    }
+                    let repo = repo.ok_or_else(|| anyhow!("missing --repo <path>"))?;
+                    let mut query = EvidenceQuery::new();
+                    if let Some(kind) = kind {
+                        query = query.kind(kind);
+                    }
+                    if let Some(subsystem) = subsystem {
+                        query = query.subsystem(subsystem);
+                    }
+                    if let Some(since_raw) = since {
+                        query = query.since_unix(parse_since(&since_raw)?);
+                    }
+                    let result = query_evidence(&repo, &query)?;
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    Ok(())
+                }
+                "snapshot" => {
+                    let mut repo = None;
+                    let mut output = None;
+                    while let Some(arg) = args.next() {
+                        match arg.as_str() {
+                            "--repo" => repo = args.next().map(PathBuf::from),
+                            "--output" => output = args.next().map(PathBuf::from),
+                            _ => bail!("unknown evidence snapshot argument `{arg}`"),
+                        }
+                    }
+                    let repo = repo.ok_or_else(|| anyhow!("missing --repo <path>"))?;
+                    let output = output.ok_or_else(|| anyhow!("missing --output <path>"))?;
+                    let snapshot = load_evidence_snapshot(&repo)?;
+                    if let Some(parent) = output.parent() {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create snapshot directory {}", parent.display())
+                        })?;
+                    }
+                    fs::write(&output, serde_json::to_string_pretty(&snapshot)?)
+                        .with_context(|| format!("failed to write {}", output.display()))?;
+                    println!("Wrote evidence snapshot to {}", output.display());
+                    Ok(())
+                }
+                _ => bail!("unknown evidence command `{action}`"),
+            }
+        }
         _ => bail!("unknown command `{command}`.\n{}", usage()),
     }
 }
@@ -204,7 +266,53 @@ fn usage() -> &'static str {
   treehouse analyze <structured files...>
   treehouse compile --target <postgres|convex> [--output dir] <structured files...>
   treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
-  treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]"
+  treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
+  treehouse evidence query --repo <path> [--kind kind] [--subsystem id] [--since unix|YYYY-MM-DD]
+  treehouse evidence snapshot --repo <path> --output <file>"
+}
+
+fn parse_since(raw: &str) -> Result<u64> {
+    if let Ok(unix) = raw.parse::<u64>() {
+        return Ok(unix);
+    }
+
+    let parts: Vec<&str> = raw.split('-').collect();
+    if parts.len() != 3 {
+        bail!("invalid --since value `{raw}`. expected unix or YYYY-MM-DD");
+    }
+    let year = parts[0]
+        .parse::<i32>()
+        .with_context(|| format!("invalid year in --since value `{raw}`"))?;
+    let month = parts[1]
+        .parse::<u32>()
+        .with_context(|| format!("invalid month in --since value `{raw}`"))?;
+    let day = parts[2]
+        .parse::<u32>()
+        .with_context(|| format!("invalid day in --since value `{raw}`"))?;
+    date_to_unix(year, month, day)
+}
+
+fn date_to_unix(year: i32, month: u32, day: u32) -> Result<u64> {
+    if !(1..=12).contains(&month) || day == 0 || day > 31 {
+        bail!("invalid date components");
+    }
+    let mut days = 0_i64;
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    let month_days = [31_i64, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 1..month {
+        days += month_days[(m - 1) as usize];
+        if m == 2 && is_leap_year(year) {
+            days += 1;
+        }
+    }
+    days += i64::from(day - 1);
+    Ok((days * 86_400).max(0) as u64)
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 fn analyze_inputs(paths: &[PathBuf]) -> Result<ApplicationModel> {
@@ -326,7 +434,11 @@ fn run_watch(
         let current = capture_snapshot(repo_path)?;
         let report = compute_system_diff(previous.as_ref(), &current);
         println!("{}", render_report(&report));
-        let current_graph = snapshot_to_graph(&current, current.generated_at_unix);
+        let evidence_snapshot = append_snapshot_evidence(repo_path, &current, Some(&report))?;
+        let current_graph = build_system_graph_from_evidence_snapshot(
+            current.generated_at_unix,
+            &evidence_snapshot,
+        );
         let previous_graph = previous
             .as_ref()
             .map(|snapshot| snapshot_to_graph(snapshot, snapshot.generated_at_unix));
@@ -492,7 +604,15 @@ mod tests {
 
         assert!(state.exists());
         assert!(report.exists());
+        assert!(temp_dir.join(".treehouse/evidence/nodes.jsonl").exists());
         let report_content = fs::read_to_string(report).unwrap();
         assert!(report_content.contains("new_capabilities"));
+    }
+
+    #[test]
+    fn parses_since_date_string() {
+        let unix = parse_since("2026-07-01").unwrap();
+        assert!(unix > 0);
+        assert_eq!(parse_since("1725148800").unwrap(), 1_725_148_800);
     }
 }

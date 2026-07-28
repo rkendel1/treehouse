@@ -8,6 +8,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use treehouse_application_model::{ApiEndpoint, Integration, Relationship, Workflow};
 use treehouse_drift::{detect_drift, DriftEvent, OwnershipPolicy};
+use treehouse_evidence::{
+    Confidence, EvidenceEdge, EvidenceKind, EvidenceNode, EvidenceQuery, EvidenceSnapshot,
+    EvidenceStore, FileEvidenceStore, Provenance, RelationKind, SourceKind,
+};
 use treehouse_graph::{GraphSource, UniversalDataGraph};
 use treehouse_model_inference::infer_application_model;
 use treehouse_parser::parse_structured_file;
@@ -261,6 +265,204 @@ pub fn compute_system_diff(
     }
 }
 
+pub fn append_snapshot_evidence(
+    repo_root: &Path,
+    snapshot: &DevelopmentSnapshot,
+    report: Option<&SystemDiffReport>,
+) -> Result<EvidenceSnapshot> {
+    let store = FileEvidenceStore::new(repo_root.join(".treehouse/evidence"));
+    let mut node_ids = Vec::new();
+
+    for change in &snapshot.git_changes {
+        let (status, file) = parse_git_change(change);
+        let node = EvidenceNode::new(
+            EvidenceKind::GitDelta { file, status },
+            snapshot.generated_at_unix,
+            Confidence::new(0.95, Some("git status observation".to_string())),
+            Provenance::new(
+                SourceKind::Git,
+                "git status --porcelain",
+                "treehouse-observer",
+            ),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for symbol in &snapshot.code_symbols {
+        let node = EvidenceNode::new(
+            EvidenceKind::Symbol {
+                language: infer_language(symbol),
+                kind: "symbol".to_string(),
+                name: symbol.clone(),
+            },
+            snapshot.generated_at_unix,
+            Confidence::new(0.75, Some("syntax extraction".to_string())),
+            Provenance::new(SourceKind::Ast, symbol, "treehouse-observer"),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for table in &snapshot.migration_tables {
+        let node = EvidenceNode::new(
+            EvidenceKind::Migration {
+                table: table.clone(),
+                operation: "create_or_alter".to_string(),
+            },
+            snapshot.generated_at_unix,
+            Confidence::new(0.90, Some("migration parser".to_string())),
+            Provenance::new(SourceKind::Migration, table, "treehouse-observer"),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for endpoint in &snapshot.api_endpoints {
+        let (method, path) = split_api_endpoint(endpoint);
+        let node = EvidenceNode::new(
+            EvidenceKind::ApiSurface { method, path },
+            snapshot.generated_at_unix,
+            Confidence::new(0.80, Some("inferred API surface".to_string())),
+            Provenance::new(SourceKind::Api, endpoint, "treehouse-observer"),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for workflow in &snapshot.workflows {
+        let node = EvidenceNode::new(
+            EvidenceKind::Workflow {
+                name: workflow.clone(),
+            },
+            snapshot.generated_at_unix,
+            Confidence::new(0.80, Some("workflow inference".to_string())),
+            Provenance::new(SourceKind::Workflow, workflow, "treehouse-observer"),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for entity in &snapshot.entities {
+        let subsystem = infer_entity_subsystem(entity);
+        let node = EvidenceNode::new(
+            EvidenceKind::Entity {
+                name: entity.clone(),
+            },
+            snapshot.generated_at_unix,
+            Confidence::new(0.85, Some("entity inference".to_string())),
+            Provenance::new(SourceKind::Entity, entity, "treehouse-observer"),
+            subsystem,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for test_case in &snapshot.test_cases {
+        let node = EvidenceNode::new(
+            EvidenceKind::TestResult {
+                name: test_case.clone(),
+                status: "observed".to_string(),
+            },
+            snapshot.generated_at_unix,
+            Confidence::new(0.70, Some("test discovery".to_string())),
+            Provenance::new(SourceKind::Test, test_case, "treehouse-observer"),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for event in &snapshot.runtime_events {
+        let node = EvidenceNode::new(
+            EvidenceKind::RuntimeEvent {
+                event: event.clone(),
+            },
+            snapshot.generated_at_unix,
+            Confidence::new(0.70, Some("runtime log marker".to_string())),
+            Provenance::new(SourceKind::Runtime, event, "treehouse-observer"),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    for signal in &snapshot.db_signals {
+        let node = EvidenceNode::new(
+            EvidenceKind::DbSignal {
+                signal: signal.clone(),
+            },
+            snapshot.generated_at_unix,
+            Confidence::new(0.75, Some("db signal extraction".to_string())),
+            Provenance::new(SourceKind::Database, signal, "treehouse-observer"),
+            None,
+            serde_json::Value::Null,
+        );
+        store.append_node(&node)?;
+        node_ids.push(node.id);
+    }
+
+    let mut finding_ids = Vec::new();
+    if let Some(report) = report {
+        for finding in report
+            .new_capabilities
+            .iter()
+            .chain(report.potential_breaks.iter())
+            .chain(report.architecture_drift.iter())
+        {
+            let node = EvidenceNode::new(
+                EvidenceKind::SystemDiffFinding {
+                    finding: finding.clone(),
+                },
+                snapshot.generated_at_unix,
+                Confidence::new(0.78, Some("system diff".to_string())),
+                Provenance::new(SourceKind::SystemDiff, "system-diff", "treehouse-observer"),
+                None,
+                serde_json::json!({ "summary": report.summary }),
+            );
+            store.append_node(&node)?;
+            finding_ids.push(node.id);
+        }
+    }
+
+    if let Some(anchor) = node_ids.first() {
+        for finding in finding_ids {
+            store.append_edge(&EvidenceEdge {
+                from: finding,
+                to: anchor.clone(),
+                relation: RelationKind::DerivedFrom,
+                confidence: Confidence::new(0.78, Some("diff derived from snapshot".to_string())),
+                observed_at_unix: snapshot.generated_at_unix,
+            })?;
+        }
+    }
+
+    store.snapshot()
+}
+
+pub fn load_evidence_snapshot(repo_root: &Path) -> Result<EvidenceSnapshot> {
+    let store = FileEvidenceStore::new(repo_root.join(".treehouse/evidence"));
+    store.snapshot()
+}
+
+pub fn query_evidence(repo_root: &Path, query: &EvidenceQuery) -> Result<Vec<EvidenceNode>> {
+    let store = FileEvidenceStore::new(repo_root.join(".treehouse/evidence"));
+    store.query(query)
+}
+
 pub fn render_report(report: &SystemDiffReport) -> String {
     let mut out = Vec::new();
     out.push(report.summary.clone());
@@ -474,6 +676,52 @@ fn extract_after_token<'a>(line: &'a str, token: &str) -> Option<&'a str> {
     } else {
         Some(remainder)
     }
+}
+
+fn parse_git_change(change: &str) -> (String, String) {
+    let mut parts = change.split_whitespace();
+    let status = parts.next().unwrap_or("??").to_string();
+    let file = parts.next().unwrap_or(change).to_string();
+    (status, file)
+}
+
+fn split_api_endpoint(endpoint: &str) -> (String, String) {
+    match endpoint.split_once(' ') {
+        Some((method, path)) => (method.to_string(), path.to_string()),
+        None => ("GET".to_string(), endpoint.to_string()),
+    }
+}
+
+fn infer_entity_subsystem(entity: &str) -> Option<String> {
+    let lower = entity.to_ascii_lowercase();
+    if lower.contains("invoice")
+        || lower.contains("payment")
+        || lower.contains("refund")
+        || lower.contains("subscription")
+    {
+        return Some("Billing".to_string());
+    }
+    if lower.contains("user") || lower.contains("tenant") || lower.contains("session") {
+        return Some("Identity".to_string());
+    }
+    None
+}
+
+fn infer_language(symbol: &str) -> String {
+    let lower = symbol.to_ascii_lowercase();
+    if lower.ends_with(".rs") || lower.contains(".rs::") {
+        return "rust".to_string();
+    }
+    if lower.ends_with(".ts") || lower.contains(".ts::") || lower.ends_with(".tsx") {
+        return "typescript".to_string();
+    }
+    if lower.ends_with(".js") || lower.contains(".js::") {
+        return "javascript".to_string();
+    }
+    if lower.ends_with(".py") || lower.contains(".py::") {
+        return "python".to_string();
+    }
+    "unknown".to_string()
 }
 
 fn clean_table_name(raw: &str) -> String {
@@ -908,5 +1156,35 @@ mod tests {
             extract_after_token("create table invoices", "create table"),
             Some("invoices")
         );
+    }
+
+    #[test]
+    fn appends_and_queries_evidence() {
+        let temp_dir = std::env::temp_dir().join("treehouse-observer-evidence-test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let snapshot = DevelopmentSnapshot {
+            generated_at_unix: 42,
+            entities: vec!["Invoice".to_string()],
+            api_endpoints: vec!["POST /invoices".to_string()],
+            git_changes: vec!["M src/lib.rs".to_string()],
+            ..DevelopmentSnapshot::default()
+        };
+        let report = SystemDiffReport {
+            summary: "System Change: +1 entities, +0 relationships, +1 APIs, +0 workflows"
+                .to_string(),
+            new_capabilities: vec!["Entity: Invoice".to_string()],
+            ..SystemDiffReport::default()
+        };
+        let written = append_snapshot_evidence(&temp_dir, &snapshot, Some(&report)).unwrap();
+        assert!(!written.nodes.is_empty());
+
+        let entities = query_evidence(
+            &temp_dir,
+            &EvidenceQuery::new().kind("entity").since_unix(1),
+        )
+        .unwrap();
+        assert_eq!(entities.len(), 1);
     }
 }

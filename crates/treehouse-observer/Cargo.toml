@@ -11,6 +11,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 treehouse-application-model = { path = "../treehouse-application-model" }
 treehouse-drift = { path = "../treehouse-drift" }
+treehouse-evidence = { path = "../treehouse-evidence" }
 treehouse-graph = { path = "../treehouse-graph" }
 treehouse-model-inference = { path = "../treehouse-model-inference" }
 treehouse-parser = { path = "../treehouse-parser" }
