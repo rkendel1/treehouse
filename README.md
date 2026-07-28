@@ -582,6 +582,12 @@ Features:
 ## Milestone 5 — System Reconstruction Engine (Application Intelligence Graph)
 
 - Expands into a System Graph: data, API, process, identity, experience, and integration signals
+- Adds a runtime observation layer (`treehouse-observer`) that continuously ingests API, database, event, log, trace, deployment, and frontend evidence
+- Evolves from one-time reverse engineering into a living Application Intelligence Runtime
+- Stores observation evidence with confidence, frequency, and first-seen/last-seen timeline metadata
+- Promotes emerging entities, relationships, and workflows into a continuously updated Living Application Graph
+- Detects semantic anomalies and architecture drift (new paths, capabilities, and domain complexity growth)
+- Adds architect-assistant style reasoning over the graph (what changed, where complexity is growing, what implicit workflows should be promoted)
 - Adds process graph reconstruction for workflow states and transitions
 - Adds business-facing outputs: experiences, permissions, and integrations in the application model
 - Adds system digital twin impact analysis and migration planning foundations
