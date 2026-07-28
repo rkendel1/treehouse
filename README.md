@@ -4,7 +4,7 @@ Explore structured data at any scale.
 
 A native, cross-platform structured data explorer built in Rust.
 
-Treehouse opens massive JSON, JSONL/NDJSON, YAML, and TOML files instantly using lazy parsing, memory mapping, and streaming indexes. XML and CSV are planned next. Instead of acting like another text editor, Treehouse understands the structure of your data and lets you explore it interactively.
+Treehouse opens massive JSON, JSONL/NDJSON, YAML, TOML, XML, and CSV files instantly using lazy parsing, memory mapping, and streaming indexes. Instead of acting like another text editor, Treehouse understands the structure of your data and lets you explore it interactively.
 
 The goal is to become TablePlus for structured documents.
 
@@ -57,11 +57,11 @@ Editing is secondary.
 - JSONL / NDJSON
 - YAML
 - TOML
+- XML
+- CSV
 
 ### Future
 
-- XML
-- CSV
 - MessagePack
 - BSON
 - CBOR
@@ -322,15 +322,16 @@ treehouse/
 ├── crates/
 │   ├── treehouse-app/
 │   ├── treehouse-ui/
+│   ├── treehouse-api/
 │   ├── treehouse-core/
+│   ├── treehouse-diff/
 │   ├── treehouse-tree/
 │   ├── treehouse-parser/
+│   ├── treehouse-graph/
+│   ├── treehouse-mock/
 │   ├── treehouse-query/
 │   ├── treehouse-search/
-│   ├── treehouse-schema/
-│   ├── treehouse-diff/
 │   ├── treehouse-stats/
-│   ├── treehouse-formats/
 │   └── treehouse-plugin/
 │
 ├── examples/
@@ -357,10 +358,19 @@ Streaming parsers:
 
 - JSON
 - YAML
-- XML
 - TOML
 
 Outputs lazy nodes.
+
+### treehouse-graph
+
+Universal Data Graph kernel:
+
+- Entity detection
+- Schema inference
+- Relationship detection
+- Confidence scoring
+- Data intelligence profiles
 
 ### treehouse-tree
 
@@ -396,6 +406,16 @@ Future: JMESPath, XPath.
 ### treehouse-diff
 
 Structural comparison engine.
+
+### treehouse-api
+
+- API surface generation from discovered entity schemas
+- Model-first request builder
+
+### treehouse-mock
+
+- Mock API runtime generated from structured model files
+- `treehouse mock <model-file>` and `treehouse-mock <model-file>`
 
 ### treehouse-stats
 
@@ -455,15 +475,22 @@ Features:
 - Recent files
 - Command palette
 
-## Milestone 3 — Power Tools
+## Milestone 3 — Universal Data Graph
 
-- jq integration
-- Structural diff
-- Schema inference
-- Exporters
-- Plugin API
-- Performance profiling
-- Large-file benchmarking
+- Universal graph model
+- Schema inference engine
+- Entity detection
+- Relationship detection
+- Graph explorer projection
+- Data intelligence panel
+
+## Milestone 4 — API Studio
+
+- New `treehouse-api` crate for API surface generation from discovered entities/schemas
+- Generated endpoints per entity (`GET /entities`, `GET /entities/{id}`, `POST /entities`, `PATCH /entities/{id}`)
+- Model-first request builder (required/optional fields + generated JSON body template)
+- New `treehouse-mock` runtime and `treehouse` CLI `mock` command
+- Local mock server at `localhost:4000` generated from discovered schemas
 
 ---
 

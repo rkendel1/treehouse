@@ -4,6 +4,8 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use treehouse_core::Document;
+use treehouse_diff::{diff_documents, DiffEntry, DiffKind};
+use treehouse_graph::{GraphEdgeKind, GraphSource, UniversalDataGraph};
 use treehouse_parser::{parse_structured_file, DocumentFormat, ParsedDocument};
 use treehouse_query::{query_json_path, value_at_path, QueryMatch};
 use treehouse_search::{search_document, SearchMatch};
@@ -12,6 +14,8 @@ use treehouse_tree::{build_rows, TreeRow, TreeState};
 
 const MAX_RECENT_FILES: usize = 12;
 const TREE_ROW_HEIGHT: f32 = 22.0;
+const GRAPH_ROW_HEIGHT: f32 = 22.0;
+const DIFF_ROW_HEIGHT: f32 = 24.0;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -33,17 +37,32 @@ struct TreehouseApp {
     current_file: Option<PathBuf>,
     current_format: Option<DocumentFormat>,
     document: Option<Document>,
+    comparison_file: Option<PathBuf>,
+    comparison_format: Option<DocumentFormat>,
+    comparison_document: Option<Document>,
+    diff_entries: Vec<DiffEntry>,
     tree_state: TreeState,
     search_query: String,
     search_results: Vec<SearchMatch>,
     stats: Option<DocumentStats>,
     jsonpath_query: String,
     jsonpath_results: Vec<QueryMatch>,
+    graph: Option<UniversalDataGraph>,
+    selected_entity: Option<String>,
+    explorer_view: ExplorerView,
     bookmarks: Vec<String>,
     recent_files: Vec<PathBuf>,
     show_command_palette: bool,
     command_filter: String,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ExplorerView {
+    #[default]
+    Tree,
+    Graph,
+    Diff,
 }
 
 impl TreehouseApp {
@@ -60,7 +79,9 @@ impl TreehouseApp {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Structured",
-                &["json", "jsonl", "ndjson", "yaml", "yml", "toml"],
+                &[
+                    "json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv",
+                ],
             )
             .pick_file()
         else {
@@ -82,10 +103,21 @@ impl TreehouseApp {
     }
 
     fn apply_document(&mut self, parsed: ParsedDocument) {
+        let source_name = parsed.path.display().to_string();
+        let graph = UniversalDataGraph::build(&[GraphSource {
+            name: &source_name,
+            document: &parsed.document,
+        }]);
+        self.selected_entity = graph
+            .intelligence
+            .first()
+            .map(|profile| profile.name.clone());
+        self.graph = Some(graph);
         self.current_file = Some(parsed.path.clone());
         self.current_format = Some(parsed.format);
         self.stats = Some(analyze(&parsed.document));
         self.document = Some(parsed.document);
+        self.refresh_diff();
         self.tree_state = TreeState::default();
         self.error = None;
         self.refresh_search();
@@ -108,6 +140,45 @@ impl TreehouseApp {
             .unwrap_or_default();
     }
 
+    fn open_compare_file_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Structured",
+                &[
+                    "json", "jsonl", "ndjson", "yaml", "yml", "toml", "xml", "csv",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+
+        self.open_compare_file_path(path);
+    }
+
+    fn open_compare_file_path(&mut self, path: PathBuf) {
+        match parse_structured_file(&path) {
+            Ok(parsed) => {
+                self.comparison_file = Some(parsed.path.clone());
+                self.comparison_format = Some(parsed.format);
+                self.comparison_document = Some(parsed.document);
+                self.refresh_diff();
+                self.explorer_view = ExplorerView::Diff;
+                self.error = None;
+            }
+            Err(err) => {
+                self.error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn refresh_diff(&mut self) {
+        self.diff_entries = match (&self.document, &self.comparison_document) {
+            (Some(left), Some(right)) => diff_documents(left, right),
+            _ => Vec::new(),
+        };
+    }
+
     fn run_jsonpath_query(&mut self) {
         self.jsonpath_results = self
             .document
@@ -128,6 +199,7 @@ impl TreehouseApp {
     fn execute_palette_command(&mut self, command: PaletteCommand) {
         match command {
             PaletteCommand::OpenFile => self.open_file_dialog(),
+            PaletteCommand::CompareFile => self.open_compare_file_dialog(),
             PaletteCommand::AddBookmark => self.add_selected_bookmark(),
             PaletteCommand::ClearBookmarks => {
                 self.bookmarks.clear();
@@ -138,6 +210,12 @@ impl TreehouseApp {
                 self.save_state();
             }
             PaletteCommand::ClearSelection => self.tree_state.clear_selection(),
+            PaletteCommand::ClearComparison => {
+                self.comparison_file = None;
+                self.comparison_format = None;
+                self.comparison_document = None;
+                self.refresh_diff();
+            }
         }
         self.show_command_palette = false;
     }
@@ -182,6 +260,101 @@ impl TreehouseApp {
             }
         });
     }
+
+    fn draw_graph(
+        ui: &mut egui::Ui,
+        graph: &UniversalDataGraph,
+        selected_entity: &mut Option<String>,
+    ) {
+        ui.heading("Graph View");
+        ui.label("Detected Entities");
+        for profile in &graph.intelligence {
+            if ui
+                .selectable_label(
+                    selected_entity.as_deref() == Some(profile.name.as_str()),
+                    format!(
+                        "{} ({}, {:.0}% confidence)",
+                        profile.name,
+                        profile.instances,
+                        profile.confidence * 100.0
+                    ),
+                )
+                .clicked()
+            {
+                *selected_entity = Some(profile.name.clone());
+            }
+        }
+
+        ui.separator();
+        ui.label("Detected Relationships");
+        egui::ScrollArea::vertical().show_rows(
+            ui,
+            GRAPH_ROW_HEIGHT,
+            graph.relationships.len(),
+            |ui, row_range| {
+                for row_index in row_range {
+                    let relationship = &graph.relationships[row_index];
+                    let kind = match relationship.kind {
+                        GraphEdgeKind::HasMany => "has many",
+                        GraphEdgeKind::BelongsTo => "belongs to",
+                        GraphEdgeKind::Related => "related to",
+                        GraphEdgeKind::HasField => "has field",
+                        GraphEdgeKind::DerivedFrom => "derived from",
+                    };
+                    if ui
+                        .button(format!(
+                            "{} --{}--> {} ({}%)",
+                            relationship.from, kind, relationship.to, relationship.confidence
+                        ))
+                        .clicked()
+                    {
+                        *selected_entity = Some(relationship.from.clone());
+                    }
+                }
+            },
+        );
+    }
+
+    fn draw_diff(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Diff View");
+        if self.document.is_none() {
+            ui.label("Open a base file first.");
+            return;
+        }
+        if self.comparison_document.is_none() {
+            ui.label("Choose a comparison file.");
+            return;
+        }
+
+        if self.diff_entries.is_empty() {
+            ui.label("No structural differences detected.");
+            return;
+        }
+
+        egui::ScrollArea::vertical().show_rows(
+            ui,
+            DIFF_ROW_HEIGHT,
+            self.diff_entries.len(),
+            |ui, row_range| {
+                for row_index in row_range {
+                    let entry = &self.diff_entries[row_index];
+                    ui.horizontal_wrapped(|ui| {
+                        let badge = match entry.kind {
+                            DiffKind::Added => "+",
+                            DiffKind::Removed => "-",
+                            DiffKind::Changed => "~",
+                            DiffKind::TypeChanged => "±",
+                        };
+                        if ui.button(entry.path.clone()).clicked() {
+                            self.tree_state.select_path(entry.path.clone());
+                            self.explorer_view = ExplorerView::Tree;
+                        }
+                        ui.label(format!("{badge} {}", diff_summary(entry)));
+                    });
+                }
+            },
+        );
+    }
 }
 
 impl eframe::App for TreehouseApp {
@@ -217,6 +390,9 @@ impl eframe::App for TreehouseApp {
                 if ui.button("Open File").clicked() {
                     self.open_file_dialog();
                 }
+                if ui.button("Compare File").clicked() {
+                    self.open_compare_file_dialog();
+                }
 
                 if ui.button("Command Palette").clicked() {
                     self.show_command_palette = true;
@@ -226,10 +402,22 @@ impl eframe::App for TreehouseApp {
                     self.add_selected_bookmark();
                 }
 
+                ui.separator();
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Tree, "Tree View");
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Graph, "Graph View");
+                ui.selectable_value(&mut self.explorer_view, ExplorerView::Diff, "Diff View");
+
                 if let Some(path) = &self.current_file {
                     ui.separator();
                     ui.label(path.display().to_string());
                     if let Some(format) = self.current_format {
+                        ui.small(format!("({format:?})"));
+                    }
+                }
+                if let Some(path) = &self.comparison_file {
+                    ui.separator();
+                    ui.label(format!("↔ {}", path.display()));
+                    if let Some(format) = self.comparison_format {
                         ui.small(format!("({format:?})"));
                     }
                 }
@@ -306,6 +494,21 @@ impl eframe::App for TreehouseApp {
                 if let Some(path) = open_recent {
                     self.open_file_path(path);
                 }
+
+                ui.separator();
+                ui.heading("Comparison");
+                if let Some(path) = &self.comparison_file {
+                    ui.label(path.display().to_string());
+                    ui.label(format!("Differences: {}", self.diff_entries.len()));
+                    if ui.small_button("Clear comparison").clicked() {
+                        self.comparison_file = None;
+                        self.comparison_format = None;
+                        self.comparison_document = None;
+                        self.refresh_diff();
+                    }
+                } else {
+                    ui.label("No comparison file selected.");
+                }
             });
 
         egui::SidePanel::right("details")
@@ -360,6 +563,130 @@ impl eframe::App for TreehouseApp {
                 }
 
                 ui.separator();
+                ui.heading("Data Intelligence");
+                if let Some(graph) = &self.graph {
+                    let selected = self.selected_entity.clone().or_else(|| {
+                        graph
+                            .intelligence
+                            .first()
+                            .map(|profile| profile.name.clone())
+                    });
+
+                    if let Some(name) = selected {
+                        if let Some(profile) = graph
+                            .intelligence
+                            .iter()
+                            .find(|profile| profile.name == name)
+                        {
+                            let schema = graph.schemas.iter().find(|schema| schema.name == name);
+                            let observation = graph
+                                .observations
+                                .iter()
+                                .find(|observation| observation.entity == name);
+                            let relationships: Vec<String> = graph
+                                .relationships
+                                .iter()
+                                .filter(|relationship| {
+                                    relationship.from == name || relationship.to == name
+                                })
+                                .map(|relationship| {
+                                    let label = match relationship.kind {
+                                        GraphEdgeKind::HasMany => "has many",
+                                        GraphEdgeKind::BelongsTo => "belongs to",
+                                        GraphEdgeKind::Related => "related to",
+                                        GraphEdgeKind::HasField => "has field",
+                                        GraphEdgeKind::DerivedFrom => "derived from",
+                                    };
+                                    format!(
+                                        "{} --{}--> {} ({}%)",
+                                        relationship.from,
+                                        label,
+                                        relationship.to,
+                                        relationship.confidence
+                                    )
+                                })
+                                .collect();
+
+                            ui.label(format!("Entity: {}", profile.name));
+                            ui.label(format!("Instances: {}", profile.instances));
+                            ui.label(format!("Fields: {}", profile.fields));
+                            ui.label(format!(
+                                "Primary Identifier: {}",
+                                profile
+                                    .primary_identifier
+                                    .as_deref()
+                                    .unwrap_or("not detected")
+                            ));
+                            ui.label(format!("Required: {:.0}%", profile.required_ratio * 100.0));
+                            ui.label(format!("Nullable: {:.0}%", profile.nullable_ratio * 100.0));
+                            ui.label(format!("Confidence: {:.0}%", profile.confidence * 100.0));
+                            ui.label(format!(
+                                "Related: {}",
+                                if profile.related.is_empty() {
+                                    "none".to_string()
+                                } else {
+                                    profile.related.join(", ")
+                                }
+                            ));
+                            ui.label(format!(
+                                "Detected PII: {}",
+                                if profile.detected_pii.is_empty() {
+                                    "none".to_string()
+                                } else {
+                                    profile.detected_pii.join(", ")
+                                }
+                            ));
+                            ui.label(format!("Sources: {}", profile.sources.join(", ")));
+
+                            ui.separator();
+                            ui.label("Field Definitions");
+                            if let Some(schema) = schema {
+                                for field in &schema.properties {
+                                    ui.label(format!(
+                                        "{}: {:?} (required {:.0}%, nullable {:.0}%, confidence {:.0}%)",
+                                        field.name,
+                                        field.kind,
+                                        field.required_ratio * 100.0,
+                                        field.nullable_ratio * 100.0,
+                                        field.confidence * 100.0
+                                    ));
+                                }
+                            } else {
+                                ui.label("No schema details available.");
+                            }
+
+                            ui.separator();
+                            ui.label("Relationships");
+                            if relationships.is_empty() {
+                                ui.label("none");
+                            } else {
+                                for relationship in relationships {
+                                    ui.label(relationship);
+                                }
+                            }
+
+                            ui.separator();
+                            ui.label("Samples");
+                            if let Some(observation) = observation {
+                                if observation.sample_paths.is_empty() {
+                                    ui.label("none");
+                                } else {
+                                    for path in &observation.sample_paths {
+                                        ui.monospace(path);
+                                    }
+                                }
+                            } else {
+                                ui.label("No sample paths available.");
+                            }
+                        }
+                    } else {
+                        ui.label("No entity profiles detected yet.");
+                    }
+                } else {
+                    ui.label("Open a file to build graph intelligence.");
+                }
+
+                ui.separator();
                 ui.heading("Search Results");
                 egui::ScrollArea::vertical()
                     .max_height(180.0)
@@ -396,14 +723,26 @@ impl eframe::App for TreehouseApp {
                 }
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.document.is_some() {
-                self.draw_tree(ui, &rows);
-            } else {
-                ui.centered_and_justified(|ui| {
-                    ui.heading("Open a JSON, YAML, or TOML file to start exploring");
-                });
+        egui::CentralPanel::default().show(ctx, |ui| match self.explorer_view {
+            ExplorerView::Tree => {
+                if self.document.is_some() {
+                    self.draw_tree(ui, &rows);
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.heading("Open a structured file to start exploring");
+                    });
+                }
             }
+            ExplorerView::Graph => {
+                if let Some(graph) = &self.graph {
+                    Self::draw_graph(ui, graph, &mut self.selected_entity);
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.heading("Open a file to generate the universal data graph");
+                    });
+                }
+            }
+            ExplorerView::Diff => self.draw_diff(ui),
         });
 
         if self.show_command_palette {
@@ -434,20 +773,24 @@ impl eframe::App for TreehouseApp {
 #[derive(Debug, Clone, Copy)]
 enum PaletteCommand {
     OpenFile,
+    CompareFile,
     AddBookmark,
     ClearBookmarks,
     ClearRecentFiles,
     ClearSelection,
+    ClearComparison,
 }
 
 impl PaletteCommand {
     fn label(self) -> &'static str {
         match self {
             PaletteCommand::OpenFile => "Open File",
+            PaletteCommand::CompareFile => "Compare File",
             PaletteCommand::AddBookmark => "Add Bookmark",
             PaletteCommand::ClearBookmarks => "Clear Bookmarks",
             PaletteCommand::ClearRecentFiles => "Clear Recent Files",
             PaletteCommand::ClearSelection => "Clear Selection",
+            PaletteCommand::ClearComparison => "Clear Comparison",
         }
     }
 }
@@ -455,10 +798,12 @@ impl PaletteCommand {
 fn filtered_commands(filter: &str) -> Vec<PaletteCommand> {
     let all = [
         PaletteCommand::OpenFile,
+        PaletteCommand::CompareFile,
         PaletteCommand::AddBookmark,
         PaletteCommand::ClearBookmarks,
         PaletteCommand::ClearRecentFiles,
         PaletteCommand::ClearSelection,
+        PaletteCommand::ClearComparison,
     ];
 
     let filter = filter.trim().to_lowercase();
@@ -479,6 +824,53 @@ fn summarize_for_results(value: &Value) -> String {
         Value::Number(v) => v.to_string(),
         Value::Bool(v) => v.to_string(),
         Value::Null => "null".to_string(),
+    }
+}
+
+fn diff_summary(entry: &DiffEntry) -> String {
+    match entry.kind {
+        DiffKind::Added => format!(
+            "added {}",
+            entry
+                .right
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string())
+        ),
+        DiffKind::Removed => format!(
+            "removed {}",
+            entry
+                .left
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string())
+        ),
+        DiffKind::Changed => {
+            let left = entry
+                .left
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            let right = entry
+                .right
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            format!("changed {left} → {right}")
+        }
+        DiffKind::TypeChanged => {
+            let left = entry
+                .left
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            let right = entry
+                .right
+                .as_ref()
+                .map(summarize_for_results)
+                .unwrap_or_else(|| "value".to_string());
+            format!("type changed {left} → {right}")
+        }
     }
 }
 
