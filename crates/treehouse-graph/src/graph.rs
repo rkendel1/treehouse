@@ -8,7 +8,9 @@ use crate::{
     edge::{GraphEdge, GraphEdgeKind},
     identity::{Identity, IdentityKind},
     node::{GraphNode, GraphNodeKind},
-    observation::EntityObservation,
+    observation::{
+        EntityObservation, ObservationEvidence, ObservationTrend, ObservationTrendDirection,
+    },
     schema::{EntityProfile, EntitySchema, FieldSchema, ValueKind},
 };
 
@@ -381,11 +383,48 @@ fn infer_entity(
         confidence: entity_confidence,
     };
 
+    let (temporal_markers, temporal_marker_count) = collect_temporal_markers(&aggregate.samples);
+    let first_seen = temporal_markers.first().cloned();
+    let last_seen = temporal_markers.last().cloned();
+    let distinct_markers = temporal_markers.len();
+    let trend_direction = if temporal_markers.is_empty() {
+        ObservationTrendDirection::Unknown
+    } else if first_seen != last_seen {
+        ObservationTrendDirection::Increasing
+    } else {
+        ObservationTrendDirection::Stable
+    };
+
+    let total_signals = aggregate.samples.len()
+        + aggregate.sources.len()
+        + aggregate.sample_paths.len()
+        + temporal_marker_count;
+    let duplicate_markers = temporal_marker_count.saturating_sub(distinct_markers);
+    let trend = ObservationTrend {
+        direction: trend_direction,
+        transitions: distinct_markers.saturating_sub(1),
+        distinct_markers,
+        duplicate_markers,
+    };
+    let evidence = ObservationEvidence {
+        sample_instances: aggregate.samples.len(),
+        source_signals: aggregate.sources.len(),
+        sample_path_signals: aggregate.sample_paths.len(),
+        temporal_markers: temporal_marker_count,
+        total_signals,
+    };
+
     let observation = EntityObservation {
         entity: entity_name.to_string(),
         instances: aggregate.samples.len(),
         sources: aggregate.sources.clone(),
         sample_paths: aggregate.sample_paths.clone(),
+        confidence: entity_confidence,
+        evidence,
+        first_seen,
+        last_seen,
+        timeline_markers: temporal_markers,
+        trend,
     };
 
     let required_ratio = if properties.is_empty() {
@@ -529,6 +568,24 @@ fn collect_object_items(items: &[Value]) -> Vec<Map<String, Value>> {
             _ => None,
         })
         .collect()
+}
+
+fn collect_temporal_markers(samples: &[Map<String, Value>]) -> (Vec<String>, usize) {
+    let mut markers = BTreeSet::new();
+    let mut total = 0;
+
+    for sample in samples {
+        for (field, value) in sample {
+            if let Value::String(raw) = value {
+                if is_temporal_field(field, value) {
+                    markers.insert(raw.as_str());
+                    total += 1;
+                }
+            }
+        }
+    }
+
+    (markers.into_iter().map(str::to_string).collect(), total)
 }
 
 fn source_stem(source: &str) -> &str {
@@ -676,6 +733,30 @@ mod tests {
                 && relationship.to == "Order"
                 && relationship.kind == GraphEdgeKind::HasMany
         }));
+
+        let customer_observation = graph
+            .observations
+            .iter()
+            .find(|observation| observation.entity == "Customer")
+            .unwrap();
+        assert!(
+            (customer_observation.confidence >= 0.5) && (customer_observation.confidence <= 0.99)
+        );
+        assert_eq!(
+            customer_observation.first_seen.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            customer_observation.last_seen.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            customer_observation.trend.direction,
+            ObservationTrendDirection::Stable
+        );
+        assert_eq!(customer_observation.evidence.total_signals, 4);
+        assert_eq!(customer_observation.evidence.temporal_markers, 1);
+        assert_eq!(customer_observation.trend.transitions, 0);
     }
 
     #[test]
@@ -726,5 +807,45 @@ mod tests {
             .detected_pii
             .iter()
             .any(|field| field == "email"));
+    }
+
+    #[test]
+    fn tracks_temporal_evolution_markers() {
+        let doc = Document::new(
+            json!({
+                "orders": [
+                    {"id": "o1", "created_at": "2026-01-01T00:00:00Z"},
+                    {"id": "o2", "created_at": "2026-02-01T00:00:00Z"}
+                ]
+            }),
+            0,
+        );
+
+        let graph = UniversalDataGraph::build(&[GraphSource {
+            name: "orders.json",
+            document: &doc,
+        }]);
+
+        let observation = graph
+            .observations
+            .iter()
+            .find(|observation| observation.entity == "Order")
+            .unwrap();
+        assert_eq!(
+            observation.first_seen.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            observation.last_seen.as_deref(),
+            Some("2026-02-01T00:00:00Z")
+        );
+        assert_eq!(
+            observation.trend.direction,
+            ObservationTrendDirection::Increasing
+        );
+        assert_eq!(observation.evidence.total_signals, 6);
+        assert_eq!(observation.evidence.temporal_markers, 2);
+        assert_eq!(observation.trend.transitions, 1);
+        assert_eq!(observation.timeline_markers.len(), 2);
     }
 }
