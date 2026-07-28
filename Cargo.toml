@@ -28,7 +28,7 @@ members = [
   "crates/treehouse-system-graph",
   "crates/treehouse-tree",
   "crates/treehouse-twin",
-  "crates/treehouse-observer",
+  "crates/treehouse-observer", "crates/treehouse-target", "crates/treehouse-planner", "crates/treehouse-scan",
 ]
 resolver = "2"
 
