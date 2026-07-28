@@ -9,9 +9,13 @@ authors.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
+treehouse-application-model = { path = "../treehouse-application-model" }
 treehouse-api = { path = "../treehouse-api" }
+treehouse-convex = { path = "../treehouse-convex" }
 treehouse-graph = { path = "../treehouse-graph" }
+treehouse-model-inference = { path = "../treehouse-model-inference" }
 treehouse-parser = { path = "../treehouse-parser" }
+treehouse-postgres = { path = "../treehouse-postgres" }
 
 [[bin]]
 name = "treehouse-mock"
