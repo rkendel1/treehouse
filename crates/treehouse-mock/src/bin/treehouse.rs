@@ -31,6 +31,9 @@ use treehouse_system_graph::{
     build_system_graph_version, KnowledgeDrift, KnowledgeGraph, KnowledgeTimeline,
     SystemGraphTimeline,
 };
+use treehouse_twin::{
+    build_twin_bundle, capability_similarity, execute_capability, RuntimeProjection, TwinBundle,
+};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -586,6 +589,124 @@ fn main() -> Result<()> {
             println!("{}", content);
             Ok(())
         }
+        "twin" => {
+            let Some(action) = args.next() else {
+                bail!(
+                    "usage: treehouse twin <build|inspect|compare|run> ..."
+                );
+            };
+            match action.as_str() {
+                "build" => {
+                    let Some(repo_path) = args.next() else {
+                        bail!(
+                            "usage: treehouse twin build <repo-path> [--output file]"
+                        );
+                    };
+                    let mut output_path = None;
+                    while let Some(arg) = args.next() {
+                        match arg.as_str() {
+                            "--output" => output_path = args.next().map(PathBuf::from),
+                            _ => bail!("unknown twin build argument `{arg}`"),
+                        }
+                    }
+
+                    let repo = PathBuf::from(&repo_path);
+                    let bundle = compile_twin_bundle(&repo)?;
+                    let output = output_path.unwrap_or_else(|| {
+                        repo.join(".treehouse/twin/digital-twin.twin.json")
+                    });
+                    save_twin_bundle(&output, &bundle)?;
+                    println!("Wrote twin bundle to {}", output.display());
+                    Ok(())
+                }
+                "inspect" => {
+                    let Some(bundle_path) = args.next() else {
+                        bail!("usage: treehouse twin inspect <bundle-file>");
+                    };
+                    let bundle = load_twin_bundle(Path::new(&bundle_path))?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "bundle_version": bundle.bundle_version,
+                            "repository": bundle.repository,
+                            "generated_at_unix": bundle.generated_at_unix,
+                            "architecture": {
+                                "nodes": bundle.architecture.nodes,
+                                "edges": bundle.architecture.edges,
+                                "subsystems": bundle.architecture.subsystems.len(),
+                                "apis": bundle.architecture.apis.len(),
+                                "symbols": bundle.architecture.symbols.len(),
+                            },
+                            "behavior": {
+                                "workflows": bundle.behavior.workflows.len(),
+                                "transitions": bundle.behavior.transitions,
+                            },
+                            "capabilities": bundle.capability.capabilities.len(),
+                            "runtime": {
+                                "architecture_confidence": bundle.runtime.architecture_confidence,
+                                "alarms": bundle.runtime.alarms,
+                            }
+                        }))?
+                    );
+                    Ok(())
+                }
+                "compare" => {
+                    let Some(left_path) = args.next() else {
+                        bail!(
+                            "usage: treehouse twin compare <bundle-a> <bundle-b>"
+                        );
+                    };
+                    let Some(right_path) = args.next() else {
+                        bail!(
+                            "usage: treehouse twin compare <bundle-a> <bundle-b>"
+                        );
+                    };
+                    let left = load_twin_bundle(Path::new(&left_path))?;
+                    let right = load_twin_bundle(Path::new(&right_path))?;
+                    let similarity = capability_similarity(&left, &right);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "left": left.repository,
+                            "right": right.repository,
+                            "capability_similarity": similarity,
+                            "percent": (similarity * 100.0).round(),
+                        }))?
+                    );
+                    Ok(())
+                }
+                "run" => {
+                    let Some(bundle_path) = args.next() else {
+                        bail!(
+                            "usage: treehouse twin run <bundle-file> --capability <name>"
+                        );
+                    };
+                    let mut capability = None;
+                    while let Some(arg) = args.next() {
+                        match arg.as_str() {
+                            "--capability" => capability = args.next(),
+                            _ => bail!("unknown twin run argument `{arg}`"),
+                        }
+                    }
+                    let capability = capability.ok_or_else(|| {
+                        anyhow!(
+                            "missing --capability <name> argument for treehouse twin run"
+                        )
+                    })?;
+                    let bundle = load_twin_bundle(Path::new(&bundle_path))?;
+                    let execution = execute_capability(&bundle, &capability);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "capability": capability,
+                            "execution": execution,
+                        }))?
+                    );
+                    Ok(())
+                }
+                _ => bail!("unknown twin command `{action}`"),
+            }
+        }
         _ => bail!("unknown command `{command}`.\n{}", usage()),
     }
 }
@@ -604,7 +725,11 @@ fn usage() -> &'static str {
     treehouse graph <repo-path> [--contains text] [--type node-type]
     treehouse why <repo-path> <term>
     treehouse drift <repo-path>
-    treehouse runtime <repo-path> [--health|--alarms|--timeline|--docs]"
+    treehouse runtime <repo-path> [--health|--alarms|--timeline|--docs]
+    treehouse twin build <repo-path> [--output file]
+    treehouse twin inspect <bundle-file>
+    treehouse twin compare <bundle-a> <bundle-b>
+    treehouse twin run <bundle-file> --capability <name>"
 }
 
 fn parse_since(raw: &str) -> Result<u64> {
@@ -689,6 +814,58 @@ fn load_knowledge_graph(repo_path: &Path) -> Result<KnowledgeGraph> {
         .with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse knowledge graph {}", path.display()))
+}
+
+fn compile_twin_bundle(repo_path: &Path) -> Result<TwinBundle> {
+    let repository = repo_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repository")
+        .to_string();
+    let model_path = repo_path.join(".treehouse/scan/bootstrap/baseline/application-model.json");
+    let knowledge_path = repo_path.join(".treehouse/knowledge/graph.json");
+    let runtime_path = repo_path.join(".treehouse/runtime/runtime.json");
+
+    let model = load_application_model(&model_path).with_context(|| {
+        format!(
+            "missing application model artifact. run cold start/scan first: {}",
+            model_path.display()
+        )
+    })?;
+    let knowledge_content = fs::read_to_string(&knowledge_path)
+        .with_context(|| format!("failed reading {}", knowledge_path.display()))?;
+    let knowledge: KnowledgeGraph = serde_json::from_str(&knowledge_content)
+        .with_context(|| format!("failed parsing {}", knowledge_path.display()))?;
+    let runtime_content = fs::read_to_string(&runtime_path)
+        .with_context(|| format!("failed reading {}", runtime_path.display()))?;
+    let runtime: RuntimeProjection = serde_json::from_str(&runtime_content)
+        .with_context(|| format!("failed parsing {}", runtime_path.display()))?;
+
+    let generated_at_unix = model.metadata.generated_at_unix;
+
+    Ok(build_twin_bundle(
+        &repository,
+        generated_at_unix,
+        &model,
+        &knowledge,
+        &runtime,
+    ))
+}
+
+fn save_twin_bundle(path: &Path, bundle: &TwinBundle) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating twin directory {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_string_pretty(bundle)?;
+    fs::write(path, serialized).with_context(|| format!("failed writing {}", path.display()))
+}
+
+fn load_twin_bundle(path: &Path) -> Result<TwinBundle> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed reading {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed parsing twin bundle {}", path.display()))
 }
 
 fn print_analysis(model: &ApplicationModel) {

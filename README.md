@@ -265,10 +265,15 @@ treehouse graph <repo-path> [--contains text] [--type node-type]
 treehouse why <repo-path> <term>
 treehouse drift <repo-path>
 treehouse runtime <repo-path> [--health|--alarms|--timeline|--docs]
+treehouse twin build <repo-path> [--output file]
+treehouse twin inspect <bundle-file>
+treehouse twin compare <bundle-a> <bundle-b>
+treehouse twin run <bundle-file> --capability <name>
 ```
 
 See `docs/software-knowledge-graph-v2.md` for the V2 model and roadmap.
 See `docs/continuous-architecture-runtime-v1.md` for CAR v1 details.
+See `docs/understanding-compiler-roadmap.md` for the twin compiler direction.
 
 Start CAR in one command:
 

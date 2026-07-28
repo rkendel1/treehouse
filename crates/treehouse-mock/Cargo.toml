@@ -24,6 +24,7 @@ treehouse-evidence = { path = "../treehouse-evidence" }
 treehouse-subsystem-engine = { path = "../treehouse-subsystem-engine" }
 treehouse-system-graph = { path = "../treehouse-system-graph" }
 treehouse-scan = { path = "../treehouse-scan" }
+treehouse-twin = { path = "../treehouse-twin" }
 
 [[bin]]
 name = "treehouse-mock"
