@@ -44,6 +44,15 @@ pub enum EvidenceKind {
     SystemDiffFinding {
         finding: String,
     },
+    ScanBaseline {
+        summary: String,
+    },
+    LlmInferredTarget {
+        summary: String,
+    },
+    GapRecommendation {
+        recommendation: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -90,6 +99,9 @@ impl EvidenceNode {
             EvidenceKind::RuntimeEvent { .. } => "runtimeevent",
             EvidenceKind::DbSignal { .. } => "dbsignal",
             EvidenceKind::SystemDiffFinding { .. } => "systemdifffinding",
+            EvidenceKind::ScanBaseline { .. } => "scanbaseline",
+            EvidenceKind::LlmInferredTarget { .. } => "llminferredtarget",
+            EvidenceKind::GapRecommendation { .. } => "gaprecommendation",
         }
     }
 }
@@ -136,6 +148,9 @@ impl Hash for EvidenceKind {
             EvidenceKind::RuntimeEvent { event } => event.hash(state),
             EvidenceKind::DbSignal { signal } => signal.hash(state),
             EvidenceKind::SystemDiffFinding { finding } => finding.hash(state),
+            EvidenceKind::ScanBaseline { summary } => summary.hash(state),
+            EvidenceKind::LlmInferredTarget { summary } => summary.hash(state),
+            EvidenceKind::GapRecommendation { recommendation } => recommendation.hash(state),
         }
     }
 }

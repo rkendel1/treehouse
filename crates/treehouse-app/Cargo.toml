@@ -19,5 +19,6 @@ treehouse-graph = { path = "../treehouse-graph" }
 treehouse-parser = { path = "../treehouse-parser" }
 treehouse-query = { path = "../treehouse-query" }
 treehouse-search = { path = "../treehouse-search" }
+treehouse-scan = { path = "../treehouse-scan" }
 treehouse-stats = { path = "../treehouse-stats" }
 treehouse-tree = { path = "../treehouse-tree" }

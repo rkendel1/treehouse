@@ -23,6 +23,7 @@ treehouse-drift = { path = "../treehouse-drift" }
 treehouse-evidence = { path = "../treehouse-evidence" }
 treehouse-subsystem-engine = { path = "../treehouse-subsystem-engine" }
 treehouse-system-graph = { path = "../treehouse-system-graph" }
+treehouse-scan = { path = "../treehouse-scan" }
 
 [[bin]]
 name = "treehouse-mock"

@@ -20,6 +20,7 @@ use treehouse_observer::{
 };
 use treehouse_parser::parse_structured_file;
 use treehouse_postgres::compile_postgres;
+use treehouse_scan::{run_scan, summary_markdown, ScanOutputFormat, ScanRequest};
 use treehouse_subsystem_engine::{discover_subsystems, SubsystemSignals};
 use treehouse_system_graph::{
     append_graph_version, build_system_graph_from_evidence_snapshot, build_system_graph_version,
@@ -196,6 +197,93 @@ fn main() -> Result<()> {
                 iterations,
             )
         }
+        "scan" => {
+            let Some(repo_path) = args.next() else {
+                bail!(
+                    "usage: treehouse scan <repo-path> --target <path|name> [--local-llm [heuristic|ollama:<model>]] [--output dir] [--baseline-only] [--goals-only] [--format json|markdown]"
+                );
+            };
+            let mut target = None;
+            let mut output = None;
+            let mut local_llm: Option<String> = None;
+            let mut baseline_only = false;
+            let mut goals_only = false;
+            let mut format = ScanOutputFormat::Json;
+
+            let scan_args: Vec<String> = args.collect();
+            let mut idx = 0;
+            while idx < scan_args.len() {
+                match scan_args[idx].as_str() {
+                    "--target" => {
+                        idx += 1;
+                        let value = scan_args
+                            .get(idx)
+                            .ok_or_else(|| anyhow!("missing value for --target"))?;
+                        target = Some(value.clone());
+                    }
+                    "--output" => {
+                        idx += 1;
+                        let value = scan_args
+                            .get(idx)
+                            .ok_or_else(|| anyhow!("missing value for --output"))?;
+                        output = Some(PathBuf::from(value));
+                    }
+                    "--local-llm" => {
+                        let maybe_value = scan_args.get(idx + 1).cloned();
+                        if let Some(value) = maybe_value {
+                            if value.starts_with("--") {
+                                local_llm = Some("heuristic".to_string());
+                            } else {
+                                local_llm = Some(value);
+                                idx += 1;
+                            }
+                        } else {
+                            local_llm = Some("heuristic".to_string());
+                        }
+                    }
+                    "--baseline-only" => baseline_only = true,
+                    "--goals-only" => goals_only = true,
+                    "--format" => {
+                        idx += 1;
+                        let value = scan_args
+                            .get(idx)
+                            .ok_or_else(|| anyhow!("missing value for --format"))?;
+                        format = match value.as_str() {
+                            "json" => ScanOutputFormat::Json,
+                            "markdown" => ScanOutputFormat::Markdown,
+                            _ => bail!("invalid --format value `{value}`. expected json|markdown"),
+                        };
+                    }
+                    arg => bail!("unknown scan argument `{arg}`"),
+                }
+                idx += 1;
+            }
+
+            if !baseline_only && target.is_none() {
+                bail!("missing --target <path|name> argument");
+            }
+
+            let request = ScanRequest {
+                repo_path: PathBuf::from(repo_path),
+                target,
+                output,
+                local_llm,
+                baseline_only,
+                goals_only,
+                format,
+            };
+            let result = run_scan(&request)?;
+            println!("Scan output: {}", result.output_dir.display());
+            match format {
+                ScanOutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result.summary)?);
+                }
+                ScanOutputFormat::Markdown => {
+                    println!("{}", summary_markdown(&result.summary));
+                }
+            }
+            Ok(())
+        }
         "evidence" => {
             let Some(action) = args.next() else {
                 bail!("usage: treehouse evidence <query|snapshot> ...");
@@ -267,6 +355,7 @@ fn usage() -> &'static str {
   treehouse compile --target <postgres|convex> [--output dir] <structured files...>
   treehouse connect <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
   treehouse watch <repo-path> [--state file] [--report file] [--interval secs] [--iterations n]
+  treehouse scan <repo-path> --target <path|name> [--local-llm [heuristic|ollama:<model>]] [--output dir] [--baseline-only] [--goals-only] [--format json|markdown]
   treehouse evidence query --repo <path> [--kind kind] [--subsystem id] [--since unix|YYYY-MM-DD]
   treehouse evidence snapshot --repo <path> --output <file>"
 }
@@ -614,5 +703,34 @@ mod tests {
         let unix = parse_since("2026-07-01").unwrap();
         assert!(unix > 0);
         assert_eq!(parse_since("1725148800").unwrap(), 1_725_148_800);
+    }
+
+    #[test]
+    fn scan_command_writes_summary() {
+        let temp_dir = std::env::temp_dir().join("treehouse-cli-scan-test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(temp_dir.join("targets")).unwrap();
+        fs::write(
+            temp_dir.join("orders.json"),
+            r#"[{"id":"o1","customer":"alice","total":12.5}]"#,
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.join("targets/event-driven.md"),
+            "# Event Driven\n## Capabilities\n- Add InvoiceProjection",
+        )
+        .unwrap();
+
+        let request = ScanRequest {
+            repo_path: temp_dir.clone(),
+            target: Some("event-driven".to_string()),
+            output: Some(temp_dir.join(".treehouse/scan/test")),
+            local_llm: Some("heuristic".to_string()),
+            baseline_only: false,
+            goals_only: false,
+            format: ScanOutputFormat::Json,
+        };
+        let result = run_scan(&request).unwrap();
+        assert!(result.output_dir.join("summary.json").exists());
     }
 }
