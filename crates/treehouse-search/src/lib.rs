@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde_json::Value;
 use treehouse_core::Document;
 
@@ -14,16 +16,20 @@ pub fn search_document(document: &Document, query: &str) -> Vec<SearchMatch> {
     }
 
     let mut matches = Vec::new();
-    walk(document.root(), "$", &needle, &mut matches);
+    let mut seen_paths = HashSet::new();
+    walk(document.root(), "$", &needle, &mut matches, &mut seen_paths);
     matches
 }
 
-fn walk(value: &Value, path: &str, needle: &str, matches: &mut Vec<SearchMatch>) {
+fn walk(
+    value: &Value,
+    path: &str,
+    needle: &str,
+    matches: &mut Vec<SearchMatch>,
+    seen_paths: &mut HashSet<String>,
+) {
     if matches_value(value, needle) || path.to_lowercase().contains(needle) {
-        matches.push(SearchMatch {
-            path: path.to_string(),
-            snippet: summarize(value),
-        });
+        push_match(path, summarize(value), matches, seen_paths);
     }
 
     match value {
@@ -31,21 +37,32 @@ fn walk(value: &Value, path: &str, needle: &str, matches: &mut Vec<SearchMatch>)
             for (key, child) in map {
                 let child_path = format!("{}.{}", path, key);
                 if key.to_lowercase().contains(needle) {
-                    matches.push(SearchMatch {
-                        path: child_path.clone(),
-                        snippet: format!("key: {}", key),
-                    });
+                    push_match(&child_path, format!("key: {}", key), matches, seen_paths);
                 }
-                walk(child, &child_path, needle, matches);
+                walk(child, &child_path, needle, matches, seen_paths);
             }
         }
         Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
                 let child_path = format!("{}[{}]", path, index);
-                walk(child, &child_path, needle, matches);
+                walk(child, &child_path, needle, matches, seen_paths);
             }
         }
         _ => {}
+    }
+}
+
+fn push_match(
+    path: &str,
+    snippet: String,
+    matches: &mut Vec<SearchMatch>,
+    seen_paths: &mut HashSet<String>,
+) {
+    if seen_paths.insert(path.to_string()) {
+        matches.push(SearchMatch {
+            path: path.to_string(),
+            snippet,
+        });
     }
 }
 
@@ -88,5 +105,15 @@ mod tests {
 
         let value_matches = search_document(&doc, "paid");
         assert!(value_matches.iter().any(|m| m.path == "$.orders[0].status"));
+    }
+
+    #[test]
+    fn avoids_duplicate_matches_for_same_path() {
+        let value: Value = serde_json::from_str("{\"customerId\":\"customer-123\"}").unwrap();
+        let doc = Document::new(value, 29);
+
+        let matches = search_document(&doc, "customer");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path, "$.customerId");
     }
 }

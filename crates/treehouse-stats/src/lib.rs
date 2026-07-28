@@ -21,7 +21,9 @@ pub fn analyze(document: &Document) -> DocumentStats {
     walk(document.root(), 0, &mut stats, &mut key_counts);
 
     let mut keys: Vec<_> = key_counts.into_iter().collect();
-    keys.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    keys.sort_by(|(key_a, count_a), (key_b, count_b)| {
+        count_b.cmp(count_a).then_with(|| key_a.cmp(key_b))
+    });
     stats.most_common_keys = keys.into_iter().take(5).collect();
     stats
 }
