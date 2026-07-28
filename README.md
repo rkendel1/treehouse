@@ -78,7 +78,7 @@ treehouse/
 
 - **treehouse-api-engine**: OpenAPI import, scenario generation, state machine discovery, and transaction flow discovery.
 - **treehouse-execution**: execution environment/runner primitives and flow reporting.
-- **treehouse-contracts**: required-field validation and contract drift detection.
+- **treehouse-contracts**: subsystem contract definitions, executable contract tests, registry + compatibility tracking, declared-vs-observed drift detection, migration planning, and validation helpers.
 
 ### Platform Generation + Domain Support
 
